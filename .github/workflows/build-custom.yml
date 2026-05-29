@@ -25,8 +25,9 @@ jobs:
           fetch-depth: 0
           submodules: 'recursive'
 
-      - name: Generate Version
-        run: python ci\generate-version.py
+      - name: Set Version
+        shell: bash
+        run: echo "3.0.0" > QtScrcpy/appversion
 
       - name: Configure CMake
         shell: cmd

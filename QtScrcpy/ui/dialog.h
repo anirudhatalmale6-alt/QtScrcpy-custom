@@ -58,6 +58,8 @@ private slots:
     void on_updateNameBtn_clicked();
     void on_useSingleModeCheck_clicked();
     void on_serialBox_currentIndexChanged(const QString &arg1);
+    void on_oneClickBtn_clicked();
+    void on_searchDeviceEdit_textChanged(const QString &text);
 
     void on_startAudioBtn_clicked();
 
@@ -99,6 +101,8 @@ private:
     QAction *m_quit;
     AudioOutput m_audioOutput;
     QTimer m_autoUpdatetimer;
+    QStringList m_allDeviceDisplayNames;
+    QStringList m_allDeviceSerials;
 };
 
 #endif // DIALOG_H

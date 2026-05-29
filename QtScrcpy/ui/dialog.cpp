@@ -72,10 +72,20 @@ Dialog::Dialog(QWidget *parent) : QWidget(parent), ui(new Ui::Widget)
                 QStringList devices = m_adb.getDevicesSerialFromStdOut();
                 ui->serialBox->clear();
                 ui->connectedPhoneList->clear();
+                m_allDeviceDisplayNames.clear();
+                m_allDeviceSerials.clear();
+                int idx = 0;
                 for (auto &item : devices) {
                     ui->serialBox->addItem(item);
-                    ui->connectedPhoneList->addItem(Config::getInstance().getNickName(item) + "-" + item);
+                    QString displayName = Config::getInstance().getNickName(item) + "-" + item;
+                    QListWidgetItem *listItem = new QListWidgetItem(displayName);
+                    listItem->setData(Qt::UserRole, idx);
+                    ui->connectedPhoneList->addItem(listItem);
+                    m_allDeviceDisplayNames.append(displayName);
+                    m_allDeviceSerials.append(item);
+                    idx++;
                 }
+                on_searchDeviceEdit_textChanged(ui->searchDeviceEdit->text());
             } else if (args.contains("show") && args.contains("wlan0")) {
                 QString ip = m_adb.getDeviceIPFromStdOut();
                 if (ip.isEmpty()) {
@@ -727,8 +737,13 @@ void Dialog::on_wifiConnectBtn_clicked()
 
 void Dialog::on_connectedPhoneList_itemDoubleClicked(QListWidgetItem *item)
 {
-    Q_UNUSED(item);
-    ui->serialBox->setCurrentIndex(ui->connectedPhoneList->currentRow());
+    if (!item) return;
+    int originalIndex = item->data(Qt::UserRole).toInt();
+    if (originalIndex >= 0 && originalIndex < ui->serialBox->count()) {
+        ui->serialBox->setCurrentIndex(originalIndex);
+    } else {
+        ui->serialBox->setCurrentIndex(ui->connectedPhoneList->currentRow());
+    }
     on_startServerBtn_clicked();
 }
 
@@ -883,6 +898,38 @@ void Dialog::savePortHistory(const QString &port)
     // 更新ComboBox
     loadPortHistory();
     ui->devicePortEdt->setCurrentText(port);
+}
+
+void Dialog::on_oneClickBtn_clicked()
+{
+    if (m_allDeviceSerials.isEmpty()) {
+        outLog("No devices found. Refreshing...", false);
+        on_updateDevice_clicked();
+        return;
+    }
+
+    outLog("One Click: connecting all devices...", false);
+    for (int i = 0; i < m_allDeviceSerials.size(); ++i) {
+        ui->serialBox->setCurrentIndex(i);
+        on_startServerBtn_clicked();
+        if (i < m_allDeviceSerials.size() - 1) {
+            delayMs(500);
+        }
+    }
+}
+
+void Dialog::on_searchDeviceEdit_textChanged(const QString &text)
+{
+    QString filter = text.trimmed().toLower();
+    ui->connectedPhoneList->clear();
+
+    for (int i = 0; i < m_allDeviceDisplayNames.size(); ++i) {
+        if (filter.isEmpty() || m_allDeviceDisplayNames[i].toLower().contains(filter)) {
+            QListWidgetItem *item = new QListWidgetItem(m_allDeviceDisplayNames[i]);
+            item->setData(Qt::UserRole, i);
+            ui->connectedPhoneList->addItem(item);
+        }
+    }
 }
 
 void Dialog::showPortEditMenu(const QPoint &pos)

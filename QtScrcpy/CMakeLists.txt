@@ -179,6 +179,8 @@ set(QC_UI_SOURCES
     ui/dialog.cpp
     ui/dialog.h
     ui/dialog.ui
+    ui/licensedialog.cpp
+    ui/licensedialog.h
     render/qyuvopenglwidget.h
     render/qyuvopenglwidget.cpp
 )

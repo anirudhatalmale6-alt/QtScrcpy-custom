@@ -13,6 +13,7 @@
 
 #include "config.h"
 #include "dialog.h"
+#include "licensedialog.h"
 #include "mousetap/mousetap.h"
 
 static Dialog *g_mainDlg = Q_NULLPTR;
@@ -130,6 +131,13 @@ int main(int argc, char *argv[])
     }
 
     qsc::AdbProcess::setAdbPath(Config::getInstance().getAdbPath());
+
+    if (!LicenseDialog::isActivated()) {
+        LicenseDialog licenseDlg;
+        if (licenseDlg.exec() != QDialog::Accepted) {
+            return 0;
+        }
+    }
 
     g_mainDlg = new Dialog {};
     g_mainDlg->show();

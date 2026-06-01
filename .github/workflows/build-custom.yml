@@ -49,7 +49,7 @@ jobs:
           ENV_VCINSTALL: ${{ env.vcinstall-path }}
           ENV_QT_PATH: ${{ env.QT_ROOT_DIR }}\..\..
         run: |
-          set publish_dir=package\QtScrcpy-custom-win-x64
+          set publish_dir=package\AniFelix-win-x64
           mkdir %publish_dir%
 
           xcopy output\x64\RelWithDebInfo\* %publish_dir%\ /E /Y
@@ -59,12 +59,12 @@ jobs:
           xcopy config %publish_dir%\config\ /E /Y
 
           call "%ENV_VCVARSALL%" x64
-          "%QT_ROOT_DIR%\bin\windeployqt.exe" %publish_dir%\QtScrcpy.exe
+          "%QT_ROOT_DIR%\bin\windeployqt.exe" %publish_dir%\AniFelix.exe
 
           if exist %publish_dir%\iconengines rmdir /s/q %publish_dir%\iconengines
           if exist %publish_dir%\translations rmdir /s/q %publish_dir%\translations
 
       - uses: actions/upload-artifact@v4
         with:
-          name: QtScrcpy-custom-win-x64
-          path: package\QtScrcpy-custom-win-x64
+          name: AniFelix-win-x64
+          path: package\AniFelix-win-x64

@@ -87,6 +87,7 @@ private:
     void saveIpHistory(const QString &ip);
     void loadPortHistory();
     void savePortHistory(const QString &port);
+    void connectNextDevice();
 
     void showPortEditMenu(const QPoint &pos);
 
@@ -106,6 +107,8 @@ private:
     QStringList m_allDeviceSerials;
     QPointer<GridViewWindow> m_gridViewWindow;
     bool m_gridViewMode = false;
+    QStringList m_pendingConnections;
+    int m_pendingIndex = 0;
 };
 
 #endif // DIALOG_H

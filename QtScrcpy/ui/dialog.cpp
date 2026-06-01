@@ -930,30 +930,47 @@ void Dialog::on_oneClickBtn_clicked()
     m_gridViewWindow->raise();
     m_gridViewWindow->activateWindow();
 
-    // Add already-connected devices to grid
+    m_gridViewMode = true;
+    m_pendingConnections.clear();
+    m_pendingIndex = 0;
+
     for (const auto &serial : m_allDeviceSerials) {
         auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
         if (device && device->getUserData()) {
             QString displayName = Config::getInstance().getNickName(serial) + "-" + serial;
             m_gridViewWindow->addDevice(serial, displayName);
-
-            // Hide the individual VideoForm window
             auto *vf = static_cast<QWidget*>(device->getUserData());
             vf->hide();
+        } else {
+            m_pendingConnections.append(serial);
         }
     }
 
-    // Connect devices that aren't connected yet, hide their windows
-    m_gridViewMode = true;
-    for (int i = 0; i < m_allDeviceSerials.size(); ++i) {
-        auto device = qsc::IDeviceManage::getInstance().getDevice(m_allDeviceSerials[i]);
-        if (!device || !device->getUserData()) {
-            ui->serialBox->setCurrentIndex(i);
-            on_startServerBtn_clicked();
-            if (i < m_allDeviceSerials.size() - 1) {
-                delayMs(500);
-            }
-        }
+    outLog(QString("Grid View: %1 connected, %2 pending...").arg(
+        m_allDeviceSerials.size() - m_pendingConnections.size()).arg(m_pendingConnections.size()), false);
+
+    if (!m_pendingConnections.isEmpty()) {
+        connectNextDevice();
+    }
+}
+
+void Dialog::connectNextDevice()
+{
+    if (m_pendingIndex >= m_pendingConnections.size()) {
+        outLog("Grid View: all devices connected.", false);
+        return;
+    }
+
+    QString serial = m_pendingConnections[m_pendingIndex];
+    int serialIdx = ui->serialBox->findText(serial);
+    if (serialIdx >= 0) {
+        ui->serialBox->setCurrentIndex(serialIdx);
+        on_startServerBtn_clicked();
+    }
+
+    m_pendingIndex++;
+    if (m_pendingIndex < m_pendingConnections.size()) {
+        QTimer::singleShot(1500, this, &Dialog::connectNextDevice);
     }
 }
 

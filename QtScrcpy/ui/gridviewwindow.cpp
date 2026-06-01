@@ -107,7 +107,7 @@ void GridTile::mouseMoveEvent(QMouseEvent *event)
 GridViewWindow::GridViewWindow(QWidget *parent)
     : QWidget(parent)
 {
-    setWindowTitle("Grid View - All Devices");
+    setWindowTitle("AniFelix - Grid View");
     resize(1200, 800);
 
 #ifdef Q_OS_WIN32

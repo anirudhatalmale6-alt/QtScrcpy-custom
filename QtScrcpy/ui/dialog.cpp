@@ -928,6 +928,10 @@ void Dialog::on_oneClickBtn_clicked()
         m_gridViewWindow = new GridViewWindow();
         connect(m_gridViewWindow, &GridViewWindow::windowClosed, this, [this]() {
             m_gridViewMode = false;
+            m_pendingConnections.clear();
+            m_pendingIndex = 0;
+            qsc::IDeviceManage::getInstance().disconnectAllDevice();
+            outLog("Grid View closed. All devices disconnected.", false);
         });
     }
 

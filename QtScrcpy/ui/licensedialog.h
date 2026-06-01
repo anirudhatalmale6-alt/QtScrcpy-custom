@@ -14,7 +14,8 @@ class LicenseDialog : public QDialog
 public:
     explicit LicenseDialog(QWidget *parent = nullptr);
     static bool isActivated();
-    static bool validateKey(const QString &key);
+    static bool validateKey(const QString &key, const QString &machineId);
+    static QString getMachineId();
 
 private slots:
     void onActivateClicked();
@@ -26,7 +27,7 @@ private:
     QLabel *m_statusLabel;
 
     static QString settingsPath();
-    static quint16 computeChecksum(const QString &prefix);
+    static quint16 computeChecksum(const QString &prefix, const QString &machineId);
 };
 
 #endif // LICENSEDIALOG_H

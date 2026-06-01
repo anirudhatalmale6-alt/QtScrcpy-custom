@@ -61,7 +61,6 @@ private slots:
     void on_serialBox_currentIndexChanged(const QString &arg1);
     void on_oneClickBtn_clicked();
     void on_searchDeviceEdit_textChanged(const QString &text);
-    void on_gridViewBtn_clicked();
 
     void on_startAudioBtn_clicked();
 

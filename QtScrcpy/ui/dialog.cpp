@@ -908,7 +908,7 @@ void Dialog::savePortHistory(const QString &port)
     ui->devicePortEdt->setCurrentText(port);
 }
 
-void Dialog::on_gridViewBtn_clicked()
+void Dialog::on_oneClickBtn_clicked()
 {
     if (!m_gridViewWindow) {
         m_gridViewWindow = new GridViewWindow();
@@ -926,29 +926,6 @@ void Dialog::on_gridViewBtn_clicked()
             m_gridViewWindow->addDevice(serial, displayName);
         }
     }
-}
-
-void Dialog::on_oneClickBtn_clicked()
-{
-    if (m_allDeviceSerials.isEmpty()) {
-        outLog("No devices found. Refreshing...", false);
-        on_updateDevice_clicked();
-        return;
-    }
-
-    outLog("One Click: connecting all devices...", false);
-    for (int i = 0; i < m_allDeviceSerials.size(); ++i) {
-        ui->serialBox->setCurrentIndex(i);
-        on_startServerBtn_clicked();
-        if (i < m_allDeviceSerials.size() - 1) {
-            delayMs(500);
-        }
-    }
-
-    // Auto-open grid view after connecting all devices
-    QTimer::singleShot(2000, this, [this]() {
-        on_gridViewBtn_clicked();
-    });
 }
 
 void Dialog::on_searchDeviceEdit_textChanged(const QString &text)

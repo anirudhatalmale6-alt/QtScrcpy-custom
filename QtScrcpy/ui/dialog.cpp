@@ -944,6 +944,11 @@ void Dialog::on_oneClickBtn_clicked()
             delayMs(500);
         }
     }
+
+    // Auto-open grid view after connecting all devices
+    QTimer::singleShot(2000, this, [this]() {
+        on_gridViewBtn_clicked();
+    });
 }
 
 void Dialog::on_searchDeviceEdit_textChanged(const QString &text)

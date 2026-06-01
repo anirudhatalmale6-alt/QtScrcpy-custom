@@ -79,5 +79,6 @@ private:
     QGridLayout *m_gridLayout;
     QMap<QString, GridTile*> m_tiles;
     QString m_searchFilter;
+};
 
 #endif // GRIDVIEWWINDOW_H

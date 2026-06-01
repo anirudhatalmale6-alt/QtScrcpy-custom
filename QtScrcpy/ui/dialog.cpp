@@ -552,10 +552,18 @@ void Dialog::onDeviceConnected(bool success, const QString &serial, const QStrin
 #endif
 
     GroupController::instance().addDevice(serial);
+
+    if (m_gridViewWindow && m_gridViewWindow->isVisible()) {
+        QString displayName = Config::getInstance().getNickName(serial) + "-" + serial;
+        m_gridViewWindow->addDevice(serial, displayName);
+    }
 }
 
 void Dialog::onDeviceDisconnected(QString serial)
 {
+    if (m_gridViewWindow) {
+        m_gridViewWindow->removeDevice(serial);
+    }
     GroupController::instance().removeDevice(serial);
     auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
     if (!device) {
@@ -898,6 +906,26 @@ void Dialog::savePortHistory(const QString &port)
     // 更新ComboBox
     loadPortHistory();
     ui->devicePortEdt->setCurrentText(port);
+}
+
+void Dialog::on_gridViewBtn_clicked()
+{
+    if (!m_gridViewWindow) {
+        m_gridViewWindow = new GridViewWindow();
+    }
+
+    m_gridViewWindow->clear();
+    m_gridViewWindow->show();
+    m_gridViewWindow->raise();
+    m_gridViewWindow->activateWindow();
+
+    for (const auto &serial : m_allDeviceSerials) {
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (device && device->getUserData()) {
+            QString displayName = Config::getInstance().getNickName(serial) + "-" + serial;
+            m_gridViewWindow->addDevice(serial, displayName);
+        }
+    }
 }
 
 void Dialog::on_oneClickBtn_clicked()

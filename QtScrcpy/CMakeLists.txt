@@ -181,6 +181,8 @@ set(QC_UI_SOURCES
     ui/dialog.ui
     ui/licensedialog.cpp
     ui/licensedialog.h
+    ui/gridviewwindow.cpp
+    ui/gridviewwindow.h
     render/qyuvopenglwidget.h
     render/qyuvopenglwidget.cpp
 )

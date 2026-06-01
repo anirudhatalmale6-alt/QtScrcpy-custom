@@ -13,6 +13,7 @@
 #include "adbprocess.h"
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
 #include "audio/audiooutput.h"
+#include "gridviewwindow.h"
 
 namespace Ui
 {
@@ -60,6 +61,7 @@ private slots:
     void on_serialBox_currentIndexChanged(const QString &arg1);
     void on_oneClickBtn_clicked();
     void on_searchDeviceEdit_textChanged(const QString &text);
+    void on_gridViewBtn_clicked();
 
     void on_startAudioBtn_clicked();
 
@@ -103,6 +105,7 @@ private:
     QTimer m_autoUpdatetimer;
     QStringList m_allDeviceDisplayNames;
     QStringList m_allDeviceSerials;
+    QPointer<GridViewWindow> m_gridViewWindow;
 };
 
 #endif // DIALOG_H

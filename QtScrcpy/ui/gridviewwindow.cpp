@@ -2,6 +2,7 @@
 #include "qyuvopenglwidget.h"
 #include "config.h"
 
+#include <QCloseEvent>
 #include <QMouseEvent>
 #include <QVBoxLayout>
 #include <QScrollArea>
@@ -221,4 +222,10 @@ int GridViewWindow::optimalColumns() const
     if (count <= 9) return 3;
     if (count <= 16) return 4;
     return 5;
+}
+
+void GridViewWindow::closeEvent(QCloseEvent *event)
+{
+    emit windowClosed();
+    QWidget::closeEvent(event);
 }

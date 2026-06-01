@@ -525,9 +525,12 @@ void Dialog::onDeviceConnected(bool success, const QString &serial, const QStrin
         videoForm->staysOnTop();
     }
 
+    bool hideForGrid = m_gridViewMode && m_gridViewWindow && m_gridViewWindow->isVisible();
+
 #ifndef Q_OS_WIN32
-    // must be show before updateShowSize
-    videoForm->show();
+    if (!hideForGrid) {
+        videoForm->show();
+    }
 #endif
     QString name = Config::getInstance().getNickName(serial);
     if (name.isEmpty()) {
@@ -539,16 +542,15 @@ void Dialog::onDeviceConnected(bool success, const QString &serial, const QStrin
     bool deviceVer = size.height() > size.width();
     QRect rc = Config::getInstance().getRect(serial);
     bool rcVer = rc.height() > rc.width();
-    // same width/height rate
     if (rc.isValid() && (deviceVer == rcVer)) {
-        // mark: resize is for fix setGeometry magneticwidget bug
         videoForm->resize(rc.size());
         videoForm->setGeometry(rc);
     }
 
 #ifdef Q_OS_WIN32
-    // windows是show太早可以看到resize的过程
-    QTimer::singleShot(200, videoForm, [videoForm](){videoForm->show();});
+    if (!hideForGrid) {
+        QTimer::singleShot(200, videoForm, [videoForm](){videoForm->show();});
+    }
 #endif
 
     GroupController::instance().addDevice(serial);
@@ -910,8 +912,17 @@ void Dialog::savePortHistory(const QString &port)
 
 void Dialog::on_oneClickBtn_clicked()
 {
+    if (m_allDeviceSerials.isEmpty()) {
+        outLog("No devices found. Refreshing...", false);
+        on_updateDevice_clicked();
+        return;
+    }
+
     if (!m_gridViewWindow) {
         m_gridViewWindow = new GridViewWindow();
+        connect(m_gridViewWindow, &GridViewWindow::windowClosed, this, [this]() {
+            m_gridViewMode = false;
+        });
     }
 
     m_gridViewWindow->clear();
@@ -919,11 +930,29 @@ void Dialog::on_oneClickBtn_clicked()
     m_gridViewWindow->raise();
     m_gridViewWindow->activateWindow();
 
+    // Add already-connected devices to grid
     for (const auto &serial : m_allDeviceSerials) {
         auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
         if (device && device->getUserData()) {
             QString displayName = Config::getInstance().getNickName(serial) + "-" + serial;
             m_gridViewWindow->addDevice(serial, displayName);
+
+            // Hide the individual VideoForm window
+            auto *vf = static_cast<QWidget*>(device->getUserData());
+            vf->hide();
+        }
+    }
+
+    // Connect devices that aren't connected yet, hide their windows
+    m_gridViewMode = true;
+    for (int i = 0; i < m_allDeviceSerials.size(); ++i) {
+        auto device = qsc::IDeviceManage::getInstance().getDevice(m_allDeviceSerials[i]);
+        if (!device || !device->getUserData()) {
+            ui->serialBox->setCurrentIndex(i);
+            on_startServerBtn_clicked();
+            if (i < m_allDeviceSerials.size() - 1) {
+                delayMs(500);
+            }
         }
     }
 }

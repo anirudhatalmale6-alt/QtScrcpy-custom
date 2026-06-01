@@ -57,8 +57,14 @@ public:
     void removeDevice(const QString &serial);
     void clear();
 
+signals:
+    void windowClosed();
+
 private slots:
     void onTileDoubleClicked(const QString &serial);
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     void rearrangeGrid();

@@ -105,6 +105,7 @@ private:
     QStringList m_allDeviceDisplayNames;
     QStringList m_allDeviceSerials;
     QPointer<GridViewWindow> m_gridViewWindow;
+    bool m_gridViewMode = false;
 };
 
 #endif // DIALOG_H

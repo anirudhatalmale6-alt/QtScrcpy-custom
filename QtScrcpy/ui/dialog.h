@@ -14,6 +14,7 @@
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
 #include "audio/audiooutput.h"
 #include "gridviewwindow.h"
+#include "webserver.h"
 
 namespace Ui
 {
@@ -109,6 +110,7 @@ private:
     bool m_gridViewMode = false;
     QStringList m_pendingConnections;
     int m_pendingIndex = 0;
+    WebServer *m_webServer = nullptr;
 };
 
 #endif // DIALOG_H

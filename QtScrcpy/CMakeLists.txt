@@ -188,6 +188,13 @@ set(QC_UI_SOURCES
 )
 source_group(ui FILES ${QC_UI_SOURCES})
 
+# web
+set(QC_WEB_SOURCES
+    web/webserver.h
+    web/webserver.cpp
+)
+source_group(web FILES ${QC_WEB_SOURCES})
+
 # group controller
 set(QC_GROUP_CONTROLLER
     groupcontroller/groupcontroller.h
@@ -263,6 +270,7 @@ set(QC_PROJECT_SOURCES
     ${QC_FONTAWESOME_SOURCES}
     ${QC_UIBASE_SOURCES}
     ${QC_UI_SOURCES}
+    ${QC_WEB_SOURCES}
     ${QC_UTIL_SOURCES}
     ${QC_MAIN_SOURCES}
     ${QC_GROUP_CONTROLLER}
@@ -294,6 +302,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE util)
 target_include_directories(${PROJECT_NAME} PRIVATE uibase)
 target_include_directories(${PROJECT_NAME} PRIVATE ui)
 target_include_directories(${PROJECT_NAME} PRIVATE render)
+target_include_directories(${PROJECT_NAME} PRIVATE web)
 
 # output dir
 # https://cmake.org/cmake/help/latest/prop_gbl/GENERATOR_IS_MULTI_CONFIG.html

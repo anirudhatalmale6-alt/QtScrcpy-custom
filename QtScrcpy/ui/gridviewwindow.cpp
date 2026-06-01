@@ -117,6 +117,16 @@ GridViewWindow::GridViewWindow(QWidget *parent)
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(4, 4, 4, 4);
 
+    m_searchEdit = new QLineEdit();
+    m_searchEdit->setPlaceholderText("Search devices...");
+    m_searchEdit->setStyleSheet(
+        "QLineEdit { background: #333; color: #eee; border: 1px solid #555; "
+        "border-radius: 4px; padding: 6px 10px; font-size: 13px; }"
+        "QLineEdit:focus { border: 1px solid #0078d7; }");
+    m_searchEdit->setMaximumHeight(32);
+    mainLayout->addWidget(m_searchEdit);
+    connect(m_searchEdit, &QLineEdit::textChanged, this, &GridViewWindow::onSearchTextChanged);
+
     auto *scrollArea = new QScrollArea();
     scrollArea->setWidgetResizable(true);
     scrollArea->setStyleSheet("QScrollArea { border: none; background: #1a1a1a; }");
@@ -140,6 +150,7 @@ void GridViewWindow::addDevice(const QString &serial, const QString &displayName
     if (m_tiles.contains(serial)) return;
 
     auto *tile = new GridTile(serial);
+    tile->setDisplayName(displayName);
     connect(tile, &GridTile::tileDoubleClicked, this, &GridViewWindow::onTileDoubleClicked);
 
     auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
@@ -147,7 +158,6 @@ void GridViewWindow::addDevice(const QString &serial, const QString &displayName
         device->registerDeviceObserver(tile);
     }
 
-    Q_UNUSED(displayName);
     m_tiles[serial] = tile;
     rearrangeGrid();
 }
@@ -201,10 +211,22 @@ void GridViewWindow::rearrangeGrid()
         delete item;
     }
 
-    int cols = optimalColumns();
+    QString filter = m_searchFilter.trimmed().toLower();
+    int visibleCount = 0;
+
+    for (auto *tile : m_tiles) {
+        bool match = filter.isEmpty() ||
+                     tile->serial().toLower().contains(filter) ||
+                     tile->displayName().toLower().contains(filter);
+        tile->setVisible(match);
+        if (match) visibleCount++;
+    }
+
+    int cols = optimalColumns(visibleCount);
     int row = 0, col = 0;
 
     for (auto *tile : m_tiles) {
+        if (!tile->isVisible()) continue;
         m_gridLayout->addWidget(tile, row, col);
         col++;
         if (col >= cols) {
@@ -214,14 +236,20 @@ void GridViewWindow::rearrangeGrid()
     }
 }
 
-int GridViewWindow::optimalColumns() const
+int GridViewWindow::optimalColumns(int count) const
 {
-    int count = m_tiles.size();
+    if (count <= 0) count = m_tiles.size();
     if (count <= 1) return 1;
     if (count <= 4) return 2;
     if (count <= 9) return 3;
     if (count <= 16) return 4;
     return 5;
+}
+
+void GridViewWindow::onSearchTextChanged(const QString &text)
+{
+    m_searchFilter = text;
+    rearrangeGrid();
 }
 
 void GridViewWindow::closeEvent(QCloseEvent *event)

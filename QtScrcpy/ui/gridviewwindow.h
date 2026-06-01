@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QGridLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMap>
 #include <QPointer>
 
@@ -19,6 +20,8 @@ public:
     ~GridTile();
 
     const QString &serial() const { return m_serial; }
+    QString displayName() const { return m_displayName; }
+    void setDisplayName(const QString &name) { m_displayName = name; }
 
 signals:
     void tileDoubleClicked(const QString &serial);
@@ -40,6 +43,7 @@ private:
                  int linesizeY, int linesizeU, int linesizeV) override;
 
     QString m_serial;
+    QString m_displayName;
     QPointer<QYUVOpenGLWidget> m_videoWidget;
     QPointer<QLabel> m_nameLabel;
     bool m_firstFrame = true;
@@ -62,16 +66,18 @@ signals:
 
 private slots:
     void onTileDoubleClicked(const QString &serial);
+    void onSearchTextChanged(const QString &text);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
 
 private:
     void rearrangeGrid();
-    int optimalColumns() const;
+    int optimalColumns(int count = 0) const;
 
+    QLineEdit *m_searchEdit;
     QGridLayout *m_gridLayout;
     QMap<QString, GridTile*> m_tiles;
-};
+    QString m_searchFilter;
 
 #endif // GRIDVIEWWINDOW_H

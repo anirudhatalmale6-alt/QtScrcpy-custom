@@ -196,7 +196,6 @@ void WebServer::handleRequest(QTcpSocket *socket)
                 if (action == "home") device->postGoHome();
                 else if (action == "back") device->postGoBack();
                 else if (action == "menu") device->postGoMenu();
-                else if (action == "power") device->postPower();
                 sendResponse(socket, 200, "application/json", "{\"ok\":true}");
             } else {
                 sendResponse(socket, 404, "application/json", "{\"error\":\"device not found\"}");
@@ -370,7 +369,6 @@ function renderGrid() {
         <button onclick="sendAction('${d.serial}','home')">Home</button>
         <button onclick="sendAction('${d.serial}','back')">Back</button>
         <button onclick="sendAction('${d.serial}','menu')">Menu</button>
-        <button onclick="sendAction('${d.serial}','power')">Power</button>
       </div>
     </div>
   `).join('');

@@ -30,16 +30,16 @@ void FrameCapture::onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU
     }
     m_throttleTimer.restart();
 
-    int sw = width / 4;
-    int sh = height / 4;
+    int sw = width / 2;
+    int sh = height / 2;
     if (sw < 1 || sh < 1) return;
 
     QImage img(sw, sh, QImage::Format_RGB888);
     for (int y = 0; y < sh; y++) {
         uint8_t *line = img.scanLine(y);
-        int srcY = y * 4;
+        int srcY = y * 2;
         for (int x = 0; x < sw; x++) {
-            int srcX = x * 4;
+            int srcX = x * 2;
             int yIdx = srcY * linesizeY + srcX;
             int uIdx = (srcY / 2) * linesizeU + (srcX / 2);
             int vIdx = (srcY / 2) * linesizeV + (srcX / 2);
@@ -74,7 +74,7 @@ QByteArray FrameCapture::getImageData(QString &format)
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
 
-    if (m_image.save(&buf, "JPEG", 50)) {
+    if (m_image.save(&buf, "JPEG", 70)) {
         format = "image/jpeg";
         return data;
     }

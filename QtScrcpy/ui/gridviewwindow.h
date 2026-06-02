@@ -7,10 +7,9 @@
 #include <QLineEdit>
 #include <QMap>
 #include <QPointer>
+#include <QElapsedTimer>
 
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
-
-class QYUVOpenGLWidget;
 
 class GridTile : public QWidget, public qsc::DeviceObserver
 {
@@ -44,9 +43,10 @@ private:
 
     QString m_serial;
     QString m_displayName;
-    QPointer<QYUVOpenGLWidget> m_videoWidget;
+    QLabel *m_imageLabel;
     QPointer<QLabel> m_nameLabel;
-    bool m_firstFrame = true;
+    QSize m_frameSize;
+    QElapsedTimer m_throttle;
 };
 
 

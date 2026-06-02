@@ -1,11 +1,12 @@
 #include "gridviewwindow.h"
-#include "qyuvopenglwidget.h"
 #include "config.h"
 
 #include <QCloseEvent>
 #include <QMouseEvent>
 #include <QVBoxLayout>
 #include <QScrollArea>
+#include <QImage>
+#include <QPixmap>
 #include <cmath>
 
 #ifdef Q_OS_WIN32
@@ -21,10 +22,13 @@ GridTile::GridTile(const QString &serial, QWidget *parent)
     layout->setContentsMargins(2, 2, 2, 2);
     layout->setSpacing(2);
 
-    m_videoWidget = new QYUVOpenGLWidget();
-    m_videoWidget->setMinimumSize(120, 200);
-    m_videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    layout->addWidget(m_videoWidget);
+    m_imageLabel = new QLabel();
+    m_imageLabel->setMinimumSize(120, 200);
+    m_imageLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_imageLabel->setAlignment(Qt::AlignCenter);
+    m_imageLabel->setStyleSheet("background: #111;");
+    m_imageLabel->setScaledContents(true);
+    layout->addWidget(m_imageLabel);
 
     QString name = Config::getInstance().getNickName(serial);
     if (name.isEmpty()) name = "Phone";
@@ -39,6 +43,8 @@ GridTile::GridTile(const QString &serial, QWidget *parent)
 
     qRegisterMetaType<uint8_t*>("uint8_t*");
     connect(this, &GridTile::frameReady, this, &GridTile::onFrameReady, Qt::QueuedConnection);
+
+    m_throttle.start();
 }
 
 GridTile::~GridTile()
@@ -48,21 +54,43 @@ GridTile::~GridTile()
 void GridTile::onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU, uint8_t *dataV,
                        int linesizeY, int linesizeU, int linesizeV)
 {
+    if (m_throttle.elapsed() < 200) return;
+    m_throttle.restart();
     emit frameReady(width, height, dataY, dataU, dataV, linesizeY, linesizeU, linesizeV);
 }
 
 void GridTile::onFrameReady(int width, int height, uint8_t *dataY, uint8_t *dataU, uint8_t *dataV,
                             int linesizeY, int linesizeU, int linesizeV)
 {
-    if (!m_videoWidget) return;
+    if (!m_imageLabel) return;
 
-    if (m_firstFrame) {
-        m_videoWidget->show();
-        m_firstFrame = false;
+    m_frameSize = QSize(width, height);
+
+    int sw = width / 4;
+    int sh = height / 4;
+    if (sw < 1 || sh < 1) return;
+
+    QImage img(sw, sh, QImage::Format_RGB888);
+    for (int y = 0; y < sh; y++) {
+        uint8_t *line = img.scanLine(y);
+        int srcY = y * 4;
+        for (int x = 0; x < sw; x++) {
+            int srcX = x * 4;
+            int yIdx = srcY * linesizeY + srcX;
+            int uIdx = (srcY / 2) * linesizeU + (srcX / 2);
+            int vIdx = (srcY / 2) * linesizeV + (srcX / 2);
+
+            int Y = dataY[yIdx];
+            int U = dataU[uIdx] - 128;
+            int V = dataV[vIdx] - 128;
+
+            line[x * 3]     = static_cast<uint8_t>(qBound(0, Y + ((V * 1436) >> 10), 255));
+            line[x * 3 + 1] = static_cast<uint8_t>(qBound(0, Y - ((U * 352 + V * 731) >> 10), 255));
+            line[x * 3 + 2] = static_cast<uint8_t>(qBound(0, Y + ((U * 1815) >> 10), 255));
+        }
     }
 
-    m_videoWidget->setFrameSize(QSize(width, height));
-    m_videoWidget->updateTextures(dataY, dataU, dataV, linesizeY, linesizeU, linesizeV);
+    m_imageLabel->setPixmap(QPixmap::fromImage(img));
 }
 
 void GridTile::mouseDoubleClickEvent(QMouseEvent *event)
@@ -74,30 +102,27 @@ void GridTile::mouseDoubleClickEvent(QMouseEvent *event)
 void GridTile::mousePressEvent(QMouseEvent *event)
 {
     auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial);
-    if (device) {
-        QSize frameSize = m_videoWidget->frameSize();
-        QSize showSize = m_videoWidget->size();
-        device->mouseEvent(event, frameSize, showSize);
+    if (device && !m_frameSize.isEmpty()) {
+        QSize showSize = m_imageLabel->size();
+        device->mouseEvent(event, m_frameSize, showSize);
     }
 }
 
 void GridTile::mouseReleaseEvent(QMouseEvent *event)
 {
     auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial);
-    if (device) {
-        QSize frameSize = m_videoWidget->frameSize();
-        QSize showSize = m_videoWidget->size();
-        device->mouseEvent(event, frameSize, showSize);
+    if (device && !m_frameSize.isEmpty()) {
+        QSize showSize = m_imageLabel->size();
+        device->mouseEvent(event, m_frameSize, showSize);
     }
 }
 
 void GridTile::mouseMoveEvent(QMouseEvent *event)
 {
     auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial);
-    if (device) {
-        QSize frameSize = m_videoWidget->frameSize();
-        QSize showSize = m_videoWidget->size();
-        device->mouseEvent(event, frameSize, showSize);
+    if (device && !m_frameSize.isEmpty()) {
+        QSize showSize = m_imageLabel->size();
+        device->mouseEvent(event, m_frameSize, showSize);
     }
 }
 

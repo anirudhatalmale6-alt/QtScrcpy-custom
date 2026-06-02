@@ -7,6 +7,8 @@
 #include <QImage>
 #include <QByteArray>
 #include <QMap>
+#include <QList>
+#include <QTimer>
 #include <QElapsedTimer>
 
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
@@ -21,6 +23,7 @@ public:
     QByteArray getImageData(QString &format);
     bool hasFrame() const;
     QSize frameSize() const { return m_frameSize; }
+    quint64 version() const { return m_version; }
 
 private:
     void onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU, uint8_t *dataV,
@@ -31,6 +34,7 @@ private:
     QImage m_image;
     QSize m_frameSize;
     QElapsedTimer m_throttleTimer;
+    quint64 m_version = 0;
 };
 
 
@@ -62,8 +66,19 @@ private:
     void sendClick(QTcpSocket *socket, const QString &serial, const QByteArray &body);
     void sendSwipe(QTcpSocket *socket, const QString &serial, const QByteArray &body);
 
+    bool handleWebSocketUpgrade(QTcpSocket *socket, const QString &request);
+    void sendWsFrame(QTcpSocket *socket, const QByteArray &data, bool binary = false);
+    void onWsData(QTcpSocket *socket);
+    void processWsMessage(QTcpSocket *socket, const QByteArray &message, bool binary);
+    void removeWsClient(QTcpSocket *socket);
+    void pushFramesToClients();
+    void sendWsDeviceList();
+
     quint16 m_port = 0;
     QMap<QString, FrameCapture*> m_captures;
+    QList<QTcpSocket*> m_wsClients;
+    QMap<QString, quint64> m_lastPushedVersion;
+    QTimer *m_pushTimer = nullptr;
 };
 
 #endif // WEBSERVER_H

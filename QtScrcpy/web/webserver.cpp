@@ -7,6 +7,7 @@
 #include <QBuffer>
 #include <QMouseEvent>
 #include <QHostAddress>
+#include <QCryptographicHash>
 
 // ---- FrameCapture ----
 
@@ -57,6 +58,7 @@ void FrameCapture::onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU
     QMutexLocker lock(&m_mutex);
     m_image = img.copy();
     m_frameSize = QSize(width, height);
+    m_version++;
 }
 
 bool FrameCapture::hasFrame() const
@@ -115,12 +117,22 @@ bool WebServer::startServer(quint16 port)
 
     if (listen(QHostAddress::Any, port)) {
         m_port = serverPort();
+        if (!m_pushTimer) {
+            m_pushTimer = new QTimer(this);
+            connect(m_pushTimer, &QTimer::timeout, this, &WebServer::pushFramesToClients);
+            m_pushTimer->start(500);
+        }
         return true;
     }
 
     for (quint16 p = 8080; p < 8100; p++) {
         if (listen(QHostAddress::Any, p)) {
             m_port = serverPort();
+            if (!m_pushTimer) {
+                m_pushTimer = new QTimer(this);
+                connect(m_pushTimer, &QTimer::timeout, this, &WebServer::pushFramesToClients);
+                m_pushTimer->start(500);
+            }
             return true;
         }
     }
@@ -129,6 +141,16 @@ bool WebServer::startServer(quint16 port)
 
 void WebServer::stopServer()
 {
+    if (m_pushTimer) {
+        m_pushTimer->stop();
+        delete m_pushTimer;
+        m_pushTimer = nullptr;
+    }
+    for (auto *ws : m_wsClients) {
+        ws->disconnectFromHost();
+    }
+    m_wsClients.clear();
+    m_lastPushedVersion.clear();
     close();
     clearDevices();
 }
@@ -143,6 +165,7 @@ void WebServer::addDevice(const QString &serial)
         device->registerDeviceObserver(capture);
     }
     m_captures[serial] = capture;
+    sendWsDeviceList();
 }
 
 void WebServer::removeDevice(const QString &serial)
@@ -155,6 +178,8 @@ void WebServer::removeDevice(const QString &serial)
         device->deRegisterDeviceObserver(capture);
     }
     capture->deleteLater();
+    m_lastPushedVersion.remove(serial);
+    sendWsDeviceList();
 }
 
 void WebServer::clearDevices()
@@ -167,6 +192,7 @@ void WebServer::clearDevices()
         it.value()->deleteLater();
     }
     m_captures.clear();
+    m_lastPushedVersion.clear();
 }
 
 void WebServer::incomingConnection(qintptr socketDescriptor)
@@ -174,9 +200,16 @@ void WebServer::incomingConnection(qintptr socketDescriptor)
     auto *socket = new QTcpSocket(this);
     socket->setSocketDescriptor(socketDescriptor);
     connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
-        handleRequest(socket);
+        if (m_wsClients.contains(socket)) {
+            onWsData(socket);
+        } else {
+            handleRequest(socket);
+        }
     });
-    connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+    connect(socket, &QTcpSocket::disconnected, this, [this, socket]() {
+        removeWsClient(socket);
+        socket->deleteLater();
+    });
 }
 
 void WebServer::handleRequest(QTcpSocket *socket)
@@ -193,6 +226,10 @@ void WebServer::handleRequest(QTcpSocket *socket)
     QString path = parts[1];
     int qmark = path.indexOf('?');
     if (qmark >= 0) path = path.left(qmark);
+
+    if (method == "GET" && path == "/ws") {
+        if (handleWebSocketUpgrade(socket, request)) return;
+    }
 
     if (method == "GET" && path == "/") {
         sendHtmlPage(socket);
@@ -232,6 +269,7 @@ void WebServer::handleRequest(QTcpSocket *socket)
     } else if (method == "GET" && path == "/api/debug") {
         QJsonObject dbg;
         dbg["captureCount"] = m_captures.size();
+        dbg["wsClients"] = m_wsClients.size();
         QJsonArray arr;
         for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
             QJsonObject d;
@@ -240,9 +278,10 @@ void WebServer::handleRequest(QTcpSocket *socket)
             QSize fs = it.value()->frameSize();
             d["frameW"] = fs.width();
             d["frameH"] = fs.height();
+            d["version"] = static_cast<qint64>(it.value()->version());
             QString fmt;
-            QByteArray data = it.value()->getImageData(fmt);
-            d["imageBytes"] = data.size();
+            QByteArray imgData = it.value()->getImageData(fmt);
+            d["imageBytes"] = imgData.size();
             d["imageFormat"] = fmt;
             arr.append(d);
         }
@@ -377,6 +416,292 @@ void WebServer::sendSwipe(QTcpSocket *socket, const QString &serial, const QByte
     sendResponse(socket, 200, "application/json", "{\"ok\":true}");
 }
 
+// ---- WebSocket ----
+
+bool WebServer::handleWebSocketUpgrade(QTcpSocket *socket, const QString &request)
+{
+    if (!request.contains("Upgrade: websocket", Qt::CaseInsensitive)) return false;
+
+    QString wsKey;
+    QStringList lines = request.split("\r\n");
+    for (const auto &line : lines) {
+        if (line.startsWith("Sec-WebSocket-Key:", Qt::CaseInsensitive)) {
+            wsKey = line.mid(18).trimmed();
+            break;
+        }
+    }
+    if (wsKey.isEmpty()) return false;
+
+    QByteArray acceptRaw = wsKey.toUtf8() + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    QByteArray acceptHash = QCryptographicHash::hash(acceptRaw, QCryptographicHash::Sha1).toBase64();
+
+    QByteArray resp;
+    resp.append("HTTP/1.1 101 Switching Protocols\r\n");
+    resp.append("Upgrade: websocket\r\n");
+    resp.append("Connection: Upgrade\r\n");
+    resp.append("Sec-WebSocket-Accept: " + acceptHash + "\r\n");
+    resp.append("\r\n");
+    socket->write(resp);
+    socket->flush();
+
+    m_wsClients.append(socket);
+
+    QJsonArray devices;
+    for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
+        QJsonObject dev;
+        dev["serial"] = it.key();
+        dev["name"] = Config::getInstance().getNickName(it.key());
+        QSize fs = it.value()->frameSize();
+        dev["width"] = fs.width();
+        dev["height"] = fs.height();
+        dev["hasFrame"] = it.value()->hasFrame();
+        devices.append(dev);
+    }
+    QJsonObject msg;
+    msg["type"] = QString("devices");
+    msg["data"] = devices;
+    sendWsFrame(socket, QJsonDocument(msg).toJson(QJsonDocument::Compact), false);
+
+    return true;
+}
+
+void WebServer::sendWsFrame(QTcpSocket *socket, const QByteArray &data, bool binary)
+{
+    if (!socket || socket->state() != QAbstractSocket::ConnectedState) return;
+
+    QByteArray frame;
+    uint8_t opcode = binary ? 0x82 : 0x81;
+    frame.append(static_cast<char>(opcode));
+
+    quint64 len = static_cast<quint64>(data.size());
+    if (len < 126) {
+        frame.append(static_cast<char>(len));
+    } else if (len <= 0xFFFF) {
+        frame.append(static_cast<char>(126));
+        frame.append(static_cast<char>((len >> 8) & 0xFF));
+        frame.append(static_cast<char>(len & 0xFF));
+    } else {
+        frame.append(static_cast<char>(127));
+        for (int i = 7; i >= 0; i--) {
+            frame.append(static_cast<char>((len >> (8 * i)) & 0xFF));
+        }
+    }
+
+    frame.append(data);
+    socket->write(frame);
+}
+
+void WebServer::onWsData(QTcpSocket *socket)
+{
+    QByteArray raw = socket->readAll();
+    if (raw.size() < 2) return;
+
+    int pos = 0;
+    while (pos < raw.size()) {
+        if (pos + 2 > raw.size()) break;
+
+        uint8_t byte0 = static_cast<uint8_t>(raw[pos]);
+        uint8_t byte1 = static_cast<uint8_t>(raw[pos + 1]);
+        int opcode = byte0 & 0x0F;
+        bool masked = (byte1 & 0x80) != 0;
+        quint64 payloadLen = byte1 & 0x7F;
+        pos += 2;
+
+        if (opcode == 0x08) {
+            removeWsClient(socket);
+            socket->disconnectFromHost();
+            return;
+        }
+
+        if (payloadLen == 126) {
+            if (pos + 2 > raw.size()) break;
+            payloadLen = (static_cast<uint8_t>(raw[pos]) << 8) | static_cast<uint8_t>(raw[pos + 1]);
+            pos += 2;
+        } else if (payloadLen == 127) {
+            if (pos + 8 > raw.size()) break;
+            payloadLen = 0;
+            for (int i = 0; i < 8; i++) {
+                payloadLen = (payloadLen << 8) | static_cast<uint8_t>(raw[pos + i]);
+            }
+            pos += 8;
+        }
+
+        char mask[4] = {0, 0, 0, 0};
+        if (masked) {
+            if (pos + 4 > raw.size()) break;
+            memcpy(mask, raw.constData() + pos, 4);
+            pos += 4;
+        }
+
+        if (pos + static_cast<int>(payloadLen) > raw.size()) break;
+
+        QByteArray payload = raw.mid(pos, static_cast<int>(payloadLen));
+        if (masked) {
+            for (int i = 0; i < payload.size(); i++) {
+                payload[i] = payload[i] ^ mask[i % 4];
+            }
+        }
+        pos += static_cast<int>(payloadLen);
+
+        if (opcode == 0x09) {
+            sendWsFrame(socket, payload, false);
+            continue;
+        }
+
+        bool isBinary = (opcode == 0x02);
+        processWsMessage(socket, payload, isBinary);
+    }
+}
+
+void WebServer::processWsMessage(QTcpSocket *socket, const QByteArray &message, bool binary)
+{
+    Q_UNUSED(binary);
+    QJsonDocument doc = QJsonDocument::fromJson(message);
+    if (!doc.isObject()) return;
+
+    QJsonObject obj = doc.object();
+    QString type = obj["type"].toString();
+    QString serial = obj["serial"].toString();
+
+    if (type == "click") {
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (!device) return;
+
+        auto *capture = m_captures.value(serial, nullptr);
+        QSize frameSize = capture ? capture->frameSize() : QSize(1080, 1920);
+        if (frameSize.isEmpty()) frameSize = QSize(1080, 1920);
+
+        int clickX = static_cast<int>(obj["x"].toDouble() * frameSize.width());
+        int clickY = static_cast<int>(obj["y"].toDouble() * frameSize.height());
+
+        QPoint pos(clickX, clickY);
+        QMouseEvent pressEvent(QEvent::MouseButtonPress, pos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        device->mouseEvent(&pressEvent, frameSize, frameSize);
+        QMouseEvent releaseEvent(QEvent::MouseButtonRelease, pos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        device->mouseEvent(&releaseEvent, frameSize, frameSize);
+    } else if (type == "swipe") {
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (!device) return;
+
+        auto *capture = m_captures.value(serial, nullptr);
+        QSize frameSize = capture ? capture->frameSize() : QSize(1080, 1920);
+        if (frameSize.isEmpty()) frameSize = QSize(1080, 1920);
+
+        int startX = static_cast<int>(obj["sx"].toDouble() * frameSize.width());
+        int startY = static_cast<int>(obj["sy"].toDouble() * frameSize.height());
+        int endX = static_cast<int>(obj["ex"].toDouble() * frameSize.width());
+        int endY = static_cast<int>(obj["ey"].toDouble() * frameSize.height());
+
+        QPoint startPos(startX, startY);
+        QMouseEvent pressEvent(QEvent::MouseButtonPress, startPos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        device->mouseEvent(&pressEvent, frameSize, frameSize);
+
+        int steps = 5;
+        for (int i = 1; i <= steps; i++) {
+            double t = static_cast<double>(i) / steps;
+            int mx = startX + static_cast<int>((endX - startX) * t);
+            int my = startY + static_cast<int>((endY - startY) * t);
+            QPoint movePos(mx, my);
+            QMouseEvent moveEvent(QEvent::MouseMove, movePos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            device->mouseEvent(&moveEvent, frameSize, frameSize);
+        }
+
+        QPoint endPos(endX, endY);
+        QMouseEvent releaseEvent(QEvent::MouseButtonRelease, endPos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        device->mouseEvent(&releaseEvent, frameSize, frameSize);
+    } else if (type == "action") {
+        QString action = obj["action"].toString();
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (!device) return;
+        if (action == "home") device->postGoHome();
+        else if (action == "back") device->postGoBack();
+        else if (action == "menu") device->postGoMenu();
+    }
+}
+
+void WebServer::removeWsClient(QTcpSocket *socket)
+{
+    m_wsClients.removeAll(socket);
+}
+
+void WebServer::pushFramesToClients()
+{
+    if (m_wsClients.isEmpty()) return;
+
+    QList<QTcpSocket*> dead;
+    for (auto *ws : m_wsClients) {
+        if (ws->state() != QAbstractSocket::ConnectedState) {
+            dead.append(ws);
+        }
+    }
+    for (auto *ws : dead) {
+        removeWsClient(ws);
+    }
+    if (m_wsClients.isEmpty()) return;
+
+    for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
+        const QString &serial = it.key();
+        FrameCapture *capture = it.value();
+        if (!capture->hasFrame()) continue;
+
+        quint64 ver = capture->version();
+        if (m_lastPushedVersion.value(serial, 0) == ver) continue;
+        m_lastPushedVersion[serial] = ver;
+
+        QString fmt;
+        QByteArray jpegData = capture->getImageData(fmt);
+        if (jpegData.isEmpty()) continue;
+
+        QByteArray serialUtf8 = serial.toUtf8();
+        quint16 serialLen = static_cast<quint16>(serialUtf8.size());
+
+        QByteArray binaryFrame;
+        binaryFrame.append(static_cast<char>((serialLen >> 8) & 0xFF));
+        binaryFrame.append(static_cast<char>(serialLen & 0xFF));
+        binaryFrame.append(serialUtf8);
+        binaryFrame.append(jpegData);
+
+        for (auto *ws : m_wsClients) {
+            if (ws->state() == QAbstractSocket::ConnectedState) {
+                sendWsFrame(ws, binaryFrame, true);
+            }
+        }
+    }
+
+    for (auto *ws : m_wsClients) {
+        if (ws->state() == QAbstractSocket::ConnectedState) {
+            ws->flush();
+        }
+    }
+}
+
+void WebServer::sendWsDeviceList()
+{
+    if (m_wsClients.isEmpty()) return;
+
+    QJsonArray devices;
+    for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
+        QJsonObject dev;
+        dev["serial"] = it.key();
+        dev["name"] = Config::getInstance().getNickName(it.key());
+        QSize fs = it.value()->frameSize();
+        dev["width"] = fs.width();
+        dev["height"] = fs.height();
+        dev["hasFrame"] = it.value()->hasFrame();
+        devices.append(dev);
+    }
+    QJsonObject msg;
+    msg["type"] = QString("devices");
+    msg["data"] = devices;
+    QByteArray json = QJsonDocument(msg).toJson(QJsonDocument::Compact);
+
+    for (auto *ws : m_wsClients) {
+        if (ws->state() == QAbstractSocket::ConnectedState) {
+            sendWsFrame(ws, json, false);
+        }
+    }
+}
+
 void WebServer::sendHtmlPage(QTcpSocket *socket)
 {
     QByteArray html = R"HTML(<!DOCTYPE html>
@@ -393,6 +718,9 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .search { background: #333; border: 1px solid #555; border-radius: 4px; padding: 6px 12px; color: #eee; font-size: 14px; width: 250px; }
 .search:focus { outline: none; border-color: #0078d7; }
 .status { margin-left: auto; font-size: 13px; color: #888; }
+.ws-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
+.ws-on { background: #1b5e20; color: #a5d6a7; }
+.ws-off { background: #b71c1c; color: #ef9a9a; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 12px; }
 .tile { background: #222; border: 1px solid #444; border-radius: 4px; overflow: hidden; cursor: pointer; transition: border-color 0.2s; }
 .tile:hover { border-color: #0078d7; }
@@ -409,25 +737,72 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 <div class="header">
   <h1>AniFelix Remote</h1>
   <input class="search" type="text" id="search" placeholder="Search devices..." oninput="filterDevices()">
-  <span class="status" id="status">Loading...</span>
+  <span class="status" id="status">Connecting...</span>
+  <span class="ws-status ws-off" id="wsStatus">WS</span>
 </div>
 <div class="grid" id="grid"></div>
 <div class="no-devices" id="noDevices" style="display:none">No devices connected</div>
 
 <script>
-let devices = [];
-let refreshInterval = 1000;
+var devices = [];
+var imageBlobs = {};
+var ws = null;
+var wsConnected = false;
 
-async function fetchDevices() {
-  try {
-    const res = await fetch('/api/devices');
-    devices = await res.json();
-    const withFrames = devices.filter(d => d.hasFrame).length;
-    document.getElementById('status').textContent = devices.length + ' device(s), ' + withFrames + ' streaming';
-    renderGrid();
-  } catch(e) {
-    document.getElementById('status').textContent = 'Connection error';
-  }
+function connectWs() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = function() {
+    wsConnected = true;
+    document.getElementById('wsStatus').className = 'ws-status ws-on';
+    document.getElementById('wsStatus').textContent = 'Live';
+  };
+
+  ws.onclose = function() {
+    wsConnected = false;
+    document.getElementById('wsStatus').className = 'ws-status ws-off';
+    document.getElementById('wsStatus').textContent = 'Offline';
+    setTimeout(connectWs, 2000);
+  };
+
+  ws.onerror = function() {
+    ws.close();
+  };
+
+  ws.onmessage = function(evt) {
+    if (typeof evt.data === 'string') {
+      var msg = JSON.parse(evt.data);
+      if (msg.type === 'devices') {
+        devices = msg.data;
+        var withFrames = devices.filter(function(d) { return d.hasFrame; }).length;
+        document.getElementById('status').textContent = devices.length + ' device(s), ' + withFrames + ' streaming';
+        renderGrid();
+      }
+    } else {
+      var buf = new Uint8Array(evt.data);
+      if (buf.length < 4) return;
+      var serialLen = (buf[0] << 8) | buf[1];
+      if (buf.length < 2 + serialLen) return;
+      var serial = '';
+      for (var i = 0; i < serialLen; i++) {
+        serial += String.fromCharCode(buf[2 + i]);
+      }
+      var jpegData = evt.data.slice(2 + serialLen);
+      var blob = new Blob([jpegData], {type: 'image/jpeg'});
+
+      if (imageBlobs[serial]) {
+        URL.revokeObjectURL(imageBlobs[serial]);
+      }
+      imageBlobs[serial] = URL.createObjectURL(blob);
+
+      var imgs = document.querySelectorAll('.tile[data-serial="' + serial + '"] img');
+      for (var j = 0; j < imgs.length; j++) {
+        imgs[j].src = imageBlobs[serial];
+      }
+    }
+  };
 }
 
 function filterDevices() {
@@ -435,14 +810,14 @@ function filterDevices() {
 }
 
 function renderGrid() {
-  const grid = document.getElementById('grid');
-  const noDevices = document.getElementById('noDevices');
-  const filter = document.getElementById('search').value.toLowerCase();
+  var grid = document.getElementById('grid');
+  var noDevices = document.getElementById('noDevices');
+  var filter = document.getElementById('search').value.toLowerCase();
 
-  const filtered = devices.filter(d =>
-    d.serial.toLowerCase().includes(filter) ||
-    (d.name && d.name.toLowerCase().includes(filter))
-  );
+  var filtered = devices.filter(function(d) {
+    return d.serial.toLowerCase().indexOf(filter) >= 0 ||
+      (d.name && d.name.toLowerCase().indexOf(filter) >= 0);
+  });
 
   if (filtered.length === 0) {
     grid.innerHTML = '';
@@ -451,32 +826,33 @@ function renderGrid() {
   }
   noDevices.style.display = 'none';
 
-  grid.innerHTML = filtered.map(d => `
-    <div class="tile" data-serial="${d.serial}">
-      <img src="/api/snapshot/${d.serial}?t=${Date.now()}"
-           onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 350%22><rect fill=%22%23111%22 width=%22200%22 height=%22350%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23444%22 text-anchor=%22middle%22 font-size=%2214%22>No Signal</text></svg>'"
-           onmousedown="startTouch(event, '${d.serial}')"
-           onmouseup="endTouch(event, '${d.serial}')"
-           onmouseleave="endTouch(event, '${d.serial}')"
-           draggable="false" />
-      <div class="info">
-        <span class="name">${d.name || 'Phone'}</span><br>${d.serial}
-      </div>
-      <div class="actions">
-        <button onclick="sendAction('${d.serial}','home')">Home</button>
-        <button onclick="sendAction('${d.serial}','back')">Back</button>
-        <button onclick="sendAction('${d.serial}','menu')">Menu</button>
-      </div>
-    </div>
-  `).join('');
+  var html = '';
+  for (var i = 0; i < filtered.length; i++) {
+    var d = filtered[i];
+    var imgSrc = imageBlobs[d.serial] || '/api/snapshot/' + d.serial;
+    html += '<div class="tile" data-serial="' + d.serial + '">';
+    html += '<img src="' + imgSrc + '"';
+    html += ' onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 350%22><rect fill=%22%23111%22 width=%22200%22 height=%22350%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23444%22 text-anchor=%22middle%22 font-size=%2214%22>No Signal</text></svg>\'"';
+    html += ' onmousedown="startTouch(event,\'' + d.serial + '\')"';
+    html += ' onmouseup="endTouch(event,\'' + d.serial + '\')"';
+    html += ' onmouseleave="endTouch(event,\'' + d.serial + '\')"';
+    html += ' draggable="false" />';
+    html += '<div class="info"><span class="name">' + (d.name || 'Phone') + '</span><br>' + d.serial + '</div>';
+    html += '<div class="actions">';
+    html += '<button onclick="sendAction(\'' + d.serial + '\',\'home\')">Home</button>';
+    html += '<button onclick="sendAction(\'' + d.serial + '\',\'back\')">Back</button>';
+    html += '<button onclick="sendAction(\'' + d.serial + '\',\'menu\')">Menu</button>';
+    html += '</div></div>';
+  }
+  grid.innerHTML = html;
 }
 
-let touchState = {};
+var touchState = {};
 
 function startTouch(event, serial) {
   event.preventDefault();
-  const img = event.target;
-  const rect = img.getBoundingClientRect();
+  var img = event.target;
+  var rect = img.getBoundingClientRect();
   touchState = {
     serial: serial,
     sx: (event.clientX - rect.left) / rect.width,
@@ -488,42 +864,46 @@ function startTouch(event, serial) {
 function endTouch(event, serial) {
   if (!touchState.active || touchState.serial !== serial) return;
   touchState.active = false;
-  const img = event.target;
-  const rect = img.getBoundingClientRect();
-  const ex = (event.clientX - rect.left) / rect.width;
-  const ey = (event.clientY - rect.top) / rect.height;
-  const dx = ex - touchState.sx;
-  const dy = ey - touchState.sy;
-  const dist = Math.sqrt(dx*dx + dy*dy);
-  if (dist < 0.03) {
-    fetch('/api/click/' + serial, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({x: touchState.sx, y: touchState.sy})
-    });
+  var img = event.target;
+  var rect = img.getBoundingClientRect();
+  var ex = (event.clientX - rect.left) / rect.width;
+  var ey = (event.clientY - rect.top) / rect.height;
+  var dx = ex - touchState.sx;
+  var dy = ey - touchState.sy;
+  var dist = Math.sqrt(dx*dx + dy*dy);
+
+  if (wsConnected && ws && ws.readyState === 1) {
+    if (dist < 0.03) {
+      ws.send(JSON.stringify({type:'click', serial:serial, x:touchState.sx, y:touchState.sy}));
+    } else {
+      ws.send(JSON.stringify({type:'swipe', serial:serial, sx:touchState.sx, sy:touchState.sy, ex:ex, ey:ey}));
+    }
   } else {
-    fetch('/api/swipe/' + serial, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({sx: touchState.sx, sy: touchState.sy, ex, ey})
-    });
+    if (dist < 0.03) {
+      fetch('/api/click/' + serial, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({x: touchState.sx, y: touchState.sy})
+      });
+    } else {
+      fetch('/api/swipe/' + serial, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sx: touchState.sx, sy: touchState.sy, ex: ex, ey: ey})
+      });
+    }
   }
 }
 
-async function sendAction(serial, action) {
-  await fetch('/api/action/' + serial + '/' + action, {method: 'POST'});
+function sendAction(serial, action) {
+  if (wsConnected && ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({type:'action', serial:serial, action:action}));
+  } else {
+    fetch('/api/action/' + serial + '/' + action, {method: 'POST'});
+  }
 }
 
-function refreshImages() {
-  document.querySelectorAll('.tile img').forEach(img => {
-    const serial = img.closest('.tile').dataset.serial;
-    img.src = '/api/snapshot/' + serial + '?t=' + Date.now();
-  });
-}
-
-fetchDevices();
-setInterval(fetchDevices, 5000);
-setInterval(refreshImages, refreshInterval);
+connectWs();
 </script>
 </body>
 </html>)HTML";

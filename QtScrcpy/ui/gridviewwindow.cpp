@@ -23,7 +23,7 @@ GridTile::GridTile(const QString &serial, QWidget *parent)
     layout->setSpacing(2);
 
     m_imageLabel = new QLabel();
-    m_imageLabel->setMinimumSize(120, 200);
+    m_imageLabel->setMinimumSize(80, 140);
     m_imageLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_imageLabel->setAlignment(Qt::AlignCenter);
     m_imageLabel->setStyleSheet("background: #111;");
@@ -39,7 +39,7 @@ GridTile::GridTile(const QString &serial, QWidget *parent)
     layout->addWidget(m_nameLabel);
 
     setStyleSheet("GridTile { border: 1px solid #444; background: #222; }");
-    setMinimumSize(140, 240);
+    setMinimumSize(100, 160);
 
     qRegisterMetaType<uint8_t*>("uint8_t*");
     connect(this, &GridTile::frameReady, this, &GridTile::onFrameReady, Qt::QueuedConnection);
@@ -54,7 +54,7 @@ GridTile::~GridTile()
 void GridTile::onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU, uint8_t *dataV,
                        int linesizeY, int linesizeU, int linesizeV)
 {
-    if (m_throttle.elapsed() < 200) return;
+    if (m_throttle.elapsed() < 500) return;
     m_throttle.restart();
     emit frameReady(width, height, dataY, dataU, dataV, linesizeY, linesizeU, linesizeV);
 }
@@ -268,7 +268,9 @@ int GridViewWindow::optimalColumns(int count) const
     if (count <= 4) return 2;
     if (count <= 9) return 3;
     if (count <= 16) return 4;
-    return 5;
+    if (count <= 36) return 6;
+    if (count <= 64) return 8;
+    return 10;
 }
 
 void GridViewWindow::onSearchTextChanged(const QString &text)

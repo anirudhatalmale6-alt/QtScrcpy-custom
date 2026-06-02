@@ -24,7 +24,7 @@ FrameCapture::~FrameCapture()
 void FrameCapture::onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU, uint8_t *dataV,
                            int linesizeY, int linesizeU, int linesizeV)
 {
-    if (m_throttleTimer.elapsed() < 500) {
+    if (m_throttleTimer.elapsed() < 300) {
         QMutexLocker lock(&m_mutex);
         m_frameSize = QSize(width, height);
         return;
@@ -76,7 +76,7 @@ QByteArray FrameCapture::getImageData(QString &format)
     QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
 
-    if (m_image.save(&buf, "JPEG", 70)) {
+    if (m_image.save(&buf, "JPEG", 85)) {
         format = "image/jpeg";
         return data;
     }
@@ -120,7 +120,7 @@ bool WebServer::startServer(quint16 port)
         if (!m_pushTimer) {
             m_pushTimer = new QTimer(this);
             connect(m_pushTimer, &QTimer::timeout, this, &WebServer::pushFramesToClients);
-            m_pushTimer->start(500);
+            m_pushTimer->start(300);
         }
         return true;
     }
@@ -131,7 +131,7 @@ bool WebServer::startServer(quint16 port)
             if (!m_pushTimer) {
                 m_pushTimer = new QTimer(this);
                 connect(m_pushTimer, &QTimer::timeout, this, &WebServer::pushFramesToClients);
-                m_pushTimer->start(500);
+                m_pushTimer->start(300);
             }
             return true;
         }
@@ -261,6 +261,11 @@ void WebServer::handleRequest(QTcpSocket *socket)
                 if (action == "home") device->postGoHome();
                 else if (action == "back") device->postGoBack();
                 else if (action == "menu") device->postGoMenu();
+                else if (action == "lock") device->setDisplayPower(false);
+                else if (action == "wake") device->setDisplayPower(true);
+                else if (action == "volup") device->postVolumeUp();
+                else if (action == "voldown") device->postVolumeDown();
+                else if (action == "appswitch") device->postAppSwitch();
                 sendResponse(socket, 200, "application/json", "{\"ok\":true}");
             } else {
                 sendResponse(socket, 404, "application/json", "{\"error\":\"device not found\"}");
@@ -616,6 +621,11 @@ void WebServer::processWsMessage(QTcpSocket *socket, const QByteArray &message, 
         if (action == "home") device->postGoHome();
         else if (action == "back") device->postGoBack();
         else if (action == "menu") device->postGoMenu();
+        else if (action == "lock") device->setDisplayPower(false);
+        else if (action == "wake") device->setDisplayPower(true);
+        else if (action == "volup") device->postVolumeUp();
+        else if (action == "voldown") device->postVolumeDown();
+        else if (action == "appswitch") device->postAppSwitch();
     }
 }
 
@@ -656,6 +666,7 @@ void WebServer::pushFramesToClients()
         quint16 serialLen = static_cast<quint16>(serialUtf8.size());
 
         QByteArray binaryFrame;
+        binaryFrame.reserve(2 + serialUtf8.size() + jpegData.size());
         binaryFrame.append(static_cast<char>((serialLen >> 8) & 0xFF));
         binaryFrame.append(static_cast<char>(serialLen & 0xFF));
         binaryFrame.append(serialUtf8);
@@ -721,15 +732,25 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .ws-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
 .ws-on { background: #1b5e20; color: #a5d6a7; }
 .ws-off { background: #b71c1c; color: #ef9a9a; }
+.bulk-btn { background: #333; border: 1px solid #555; color: #ccc; padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.bulk-btn:hover { background: #444; color: #fff; }
+.bulk-btn.lock-all { background: #4a1a1a; border-color: #833; }
+.bulk-btn.lock-all:hover { background: #622; }
+.bulk-btn.wake-all { background: #1a3a1a; border-color: #383; }
+.bulk-btn.wake-all:hover { background: #264; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 12px; }
 .tile { background: #222; border: 1px solid #444; border-radius: 4px; overflow: hidden; cursor: pointer; transition: border-color 0.2s; }
 .tile:hover { border-color: #0078d7; }
 .tile img { width: 100%; display: block; background: #111; min-height: 300px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
 .tile .info { padding: 6px 8px; font-size: 11px; color: #aaa; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .info .name { color: #ddd; font-weight: 500; }
-.tile .actions { display: flex; gap: 4px; padding: 4px 8px 8px; justify-content: center; }
-.tile .actions button { background: #333; border: 1px solid #555; color: #ccc; padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+.tile .actions { display: flex; gap: 3px; padding: 4px 6px 6px; justify-content: center; flex-wrap: wrap; }
+.tile .actions button { background: #333; border: 1px solid #555; color: #ccc; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 10px; }
 .tile .actions button:hover { background: #444; color: #fff; }
+.tile .actions button.lock { background: #4a1a1a; border-color: #833; }
+.tile .actions button.lock:hover { background: #622; }
+.tile .actions button.wake { background: #1a3a1a; border-color: #383; }
+.tile .actions button.wake:hover { background: #264; }
 .no-devices { text-align: center; padding: 80px 20px; color: #666; font-size: 16px; }
 </style>
 </head>
@@ -737,6 +758,8 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 <div class="header">
   <h1>AniFelix Remote</h1>
   <input class="search" type="text" id="search" placeholder="Search devices..." oninput="filterDevices()">
+  <button class="bulk-btn lock-all" onclick="bulkAction('lock')">Lock All</button>
+  <button class="bulk-btn wake-all" onclick="bulkAction('wake')">Wake All</button>
   <span class="status" id="status">Connecting...</span>
   <span class="ws-status ws-off" id="wsStatus">WS</span>
 </div>
@@ -842,6 +865,10 @@ function renderGrid() {
     html += '<button onclick="sendAction(\'' + d.serial + '\',\'home\')">Home</button>';
     html += '<button onclick="sendAction(\'' + d.serial + '\',\'back\')">Back</button>';
     html += '<button onclick="sendAction(\'' + d.serial + '\',\'menu\')">Menu</button>';
+    html += '<button class="lock" onclick="sendAction(\'' + d.serial + '\',\'lock\')">Lock</button>';
+    html += '<button class="wake" onclick="sendAction(\'' + d.serial + '\',\'wake\')">Wake</button>';
+    html += '<button onclick="sendAction(\'' + d.serial + '\',\'volup\')">Vol+</button>';
+    html += '<button onclick="sendAction(\'' + d.serial + '\',\'voldown\')">Vol-</button>';
     html += '</div></div>';
   }
   grid.innerHTML = html;
@@ -900,6 +927,12 @@ function sendAction(serial, action) {
     ws.send(JSON.stringify({type:'action', serial:serial, action:action}));
   } else {
     fetch('/api/action/' + serial + '/' + action, {method: 'POST'});
+  }
+}
+
+function bulkAction(action) {
+  for (var i = 0; i < devices.length; i++) {
+    sendAction(devices[i].serial, action);
   }
 }
 

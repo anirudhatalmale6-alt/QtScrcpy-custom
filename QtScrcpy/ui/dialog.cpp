@@ -141,6 +141,7 @@ Dialog::Dialog(QWidget *parent) : QWidget(parent), ui(new Ui::Widget)
 Dialog::~Dialog()
 {
     qDebug() << "~Dialog()";
+    stopTrackDevices();
     updateBootConfig(false);
     qsc::IDeviceManage::getInstance().disconnectAllDevice();
     delete ui;
@@ -931,6 +932,7 @@ void Dialog::on_oneClickBtn_clicked()
             m_gridViewMode = false;
             m_pendingConnections.clear();
             m_pendingIndex = 0;
+            stopTrackDevices();
             qsc::IDeviceManage::getInstance().disconnectAllDevice();
             outLog("Grid View closed. All devices disconnected.", false);
         });
@@ -953,9 +955,7 @@ void Dialog::on_oneClickBtn_clicked()
     m_pendingConnections.clear();
     m_pendingIndex = 0;
 
-    if (!m_autoUpdatetimer.isActive()) {
-        m_autoUpdatetimer.start(5000);
-    }
+    startTrackDevices();
 
     for (const auto &serial : m_allDeviceSerials) {
         auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
@@ -1017,6 +1017,49 @@ void Dialog::autoConnectNewDevices()
     m_pendingIndex = 0;
     outLog(QString("Auto-connecting %1 new device(s)...").arg(newDevices.size()), false);
     connectNextDevice();
+}
+
+void Dialog::startTrackDevices()
+{
+    stopTrackDevices();
+
+    QString adbPath = QCoreApplication::applicationDirPath() + "/adb";
+#ifdef Q_OS_WIN32
+    adbPath += ".exe";
+#endif
+    if (!QFileInfo::exists(adbPath)) return;
+
+    m_trackProcess = new QProcess(this);
+    connect(m_trackProcess, &QProcess::readyReadStandardOutput, this, [this]() {
+        m_trackProcess->readAllStandardOutput();
+        if (!m_adb.isRuning()) {
+            on_updateDevice_clicked();
+        }
+    });
+    connect(m_trackProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this](int exitCode, QProcess::ExitStatus) {
+        Q_UNUSED(exitCode);
+        if (m_gridViewMode && m_trackProcess) {
+            outLog("track-devices stopped, falling back to polling", false);
+            if (!m_autoUpdatetimer.isActive()) {
+                m_autoUpdatetimer.start(5000);
+            }
+        }
+    });
+    m_trackProcess->start(adbPath, QStringList() << "track-devices");
+}
+
+void Dialog::stopTrackDevices()
+{
+    if (m_trackProcess) {
+        m_trackProcess->disconnect();
+        if (m_trackProcess->state() != QProcess::NotRunning) {
+            m_trackProcess->kill();
+            m_trackProcess->waitForFinished(1000);
+        }
+        m_trackProcess->deleteLater();
+        m_trackProcess = nullptr;
+    }
 }
 
 void Dialog::on_searchDeviceEdit_textChanged(const QString &text)

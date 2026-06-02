@@ -8,6 +8,7 @@
 #include <QSystemTrayIcon>
 #include <QListWidget>
 #include <QTimer>
+#include <QProcess>
 
 
 #include "adbprocess.h"
@@ -90,6 +91,8 @@ private:
     void savePortHistory(const QString &port);
     void connectNextDevice();
     void autoConnectNewDevices();
+    void startTrackDevices();
+    void stopTrackDevices();
 
     void showPortEditMenu(const QPoint &pos);
 
@@ -112,6 +115,7 @@ private:
     QStringList m_pendingConnections;
     int m_pendingIndex = 0;
     WebServer *m_webServer = nullptr;
+    QProcess *m_trackProcess = nullptr;
 };
 
 #endif // DIALOG_H

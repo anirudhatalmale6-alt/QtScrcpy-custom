@@ -97,6 +97,7 @@ void LicenseDialog::onActivateClicked()
         QSettings settings(settingsPath(), QSettings::IniFormat);
         settings.setValue("license/key", key);
         settings.setValue("license/machineId", machineId);
+        settings.setValue("license/hostname", QSysInfo::machineHostName());
         settings.sync();
         m_statusLabel->setStyleSheet("color: green;");
         m_statusLabel->setText("Activated successfully!");
@@ -112,10 +113,12 @@ bool LicenseDialog::isActivated()
     QSettings settings(settingsPath(), QSettings::IniFormat);
     QString storedKey = settings.value("license/key", "").toString();
     QString storedMachineId = settings.value("license/machineId", "").toString();
-    QString currentMachineId = getMachineId();
+    QString storedHostname = settings.value("license/hostname", "").toString();
 
-    if (storedMachineId != currentMachineId) return false;
-    return !storedKey.isEmpty() && validateKey(storedKey, currentMachineId);
+    if (storedKey.isEmpty() || storedMachineId.isEmpty()) return false;
+    if (!validateKey(storedKey, storedMachineId)) return false;
+    if (!storedHostname.isEmpty() && storedHostname != QSysInfo::machineHostName()) return false;
+    return true;
 }
 
 bool LicenseDialog::validateKey(const QString &key, const QString &machineId)

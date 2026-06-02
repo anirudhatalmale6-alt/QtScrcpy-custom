@@ -18,7 +18,7 @@ public:
     explicit FrameCapture(const QString &serial, QObject *parent = nullptr);
     ~FrameCapture();
 
-    QByteArray getJpeg();
+    QByteArray getImageData(QString &format);
     bool hasFrame() const;
     QSize frameSize() const { return m_frameSize; }
 

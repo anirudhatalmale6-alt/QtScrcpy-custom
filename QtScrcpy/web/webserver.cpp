@@ -65,15 +65,35 @@ bool FrameCapture::hasFrame() const
     return !m_image.isNull();
 }
 
-QByteArray FrameCapture::getJpeg()
+QByteArray FrameCapture::getImageData(QString &format)
 {
     QMutexLocker lock(&m_mutex);
     if (m_image.isNull()) return QByteArray();
-    QByteArray jpeg;
-    QBuffer buf(&jpeg);
+
+    QByteArray data;
+    QBuffer buf(&data);
     buf.open(QIODevice::WriteOnly);
-    m_image.save(&buf, "JPEG", 50);
-    return jpeg;
+
+    if (m_image.save(&buf, "JPEG", 50)) {
+        format = "image/jpeg";
+        return data;
+    }
+
+    data.clear();
+    buf.seek(0);
+    if (m_image.save(&buf, "PNG")) {
+        format = "image/png";
+        return data;
+    }
+
+    data.clear();
+    buf.seek(0);
+    if (m_image.save(&buf, "BMP")) {
+        format = "image/bmp";
+        return data;
+    }
+
+    return QByteArray();
 }
 
 
@@ -201,6 +221,25 @@ void WebServer::handleRequest(QTcpSocket *socket)
                 sendResponse(socket, 404, "application/json", "{\"error\":\"device not found\"}");
             }
         }
+    } else if (method == "GET" && path == "/api/debug") {
+        QJsonObject dbg;
+        dbg["captureCount"] = m_captures.size();
+        QJsonArray arr;
+        for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
+            QJsonObject d;
+            d["serial"] = it.key();
+            d["hasFrame"] = it.value()->hasFrame();
+            QSize fs = it.value()->frameSize();
+            d["frameW"] = fs.width();
+            d["frameH"] = fs.height();
+            QString fmt;
+            QByteArray data = it.value()->getImageData(fmt);
+            d["imageBytes"] = data.size();
+            d["imageFormat"] = fmt;
+            arr.append(d);
+        }
+        dbg["devices"] = arr;
+        sendResponse(socket, 200, "application/json", QJsonDocument(dbg).toJson());
     } else {
         sendResponse(socket, 404, "text/plain", "Not Found");
     }
@@ -246,12 +285,13 @@ void WebServer::sendSnapshot(QTcpSocket *socket, const QString &serial)
         sendResponse(socket, 404, "text/plain", "Device not found");
         return;
     }
-    QByteArray jpeg = m_captures[serial]->getJpeg();
-    if (jpeg.isEmpty()) {
+    QString contentType;
+    QByteArray imageData = m_captures[serial]->getImageData(contentType);
+    if (imageData.isEmpty()) {
         sendResponse(socket, 503, "text/plain", "No frame available");
         return;
     }
-    sendResponse(socket, 200, "image/jpeg", jpeg);
+    sendResponse(socket, 200, contentType, imageData);
 }
 
 void WebServer::sendClick(QTcpSocket *socket, const QString &serial, const QByteArray &body)
@@ -329,7 +369,8 @@ async function fetchDevices() {
   try {
     const res = await fetch('/api/devices');
     devices = await res.json();
-    document.getElementById('status').textContent = devices.length + ' device(s)';
+    const withFrames = devices.filter(d => d.hasFrame).length;
+    document.getElementById('status').textContent = devices.length + ' device(s), ' + withFrames + ' streaming';
     renderGrid();
   } catch(e) {
     document.getElementById('status').textContent = 'Connection error';

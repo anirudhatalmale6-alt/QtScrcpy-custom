@@ -13,6 +13,7 @@
 FrameCapture::FrameCapture(const QString &serial, QObject *parent)
     : QObject(parent), m_serial(serial)
 {
+    m_throttleTimer.start();
 }
 
 FrameCapture::~FrameCapture()
@@ -22,15 +23,13 @@ FrameCapture::~FrameCapture()
 void FrameCapture::onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU, uint8_t *dataV,
                            int linesizeY, int linesizeU, int linesizeV)
 {
-    // Throttle: only capture every 500ms
-    if (m_throttleTimer.isValid() && m_throttleTimer.elapsed() < 500) {
+    if (m_throttleTimer.elapsed() < 500) {
         QMutexLocker lock(&m_mutex);
         m_frameSize = QSize(width, height);
         return;
     }
     m_throttleTimer.restart();
 
-    // Scale down by 4x first for fast conversion
     int sw = width / 4;
     int sh = height / 4;
     if (sw < 1 || sh < 1) return;
@@ -55,21 +54,26 @@ void FrameCapture::onFrame(int width, int height, uint8_t *dataY, uint8_t *dataU
         }
     }
 
-    QByteArray jpeg;
-    QBuffer buf(&jpeg);
-    buf.open(QIODevice::WriteOnly);
-    img.save(&buf, "JPEG", 50);
-    buf.close();
-
     QMutexLocker lock(&m_mutex);
-    m_jpegData = jpeg;
+    m_image = img.copy();
     m_frameSize = QSize(width, height);
+}
+
+bool FrameCapture::hasFrame() const
+{
+    QMutexLocker lock(&m_mutex);
+    return !m_image.isNull();
 }
 
 QByteArray FrameCapture::getJpeg()
 {
     QMutexLocker lock(&m_mutex);
-    return m_jpegData;
+    if (m_image.isNull()) return QByteArray();
+    QByteArray jpeg;
+    QBuffer buf(&jpeg);
+    buf.open(QIODevice::WriteOnly);
+    m_image.save(&buf, "JPEG", 50);
+    return jpeg;
 }
 
 
@@ -230,7 +234,7 @@ void WebServer::sendDeviceList(QTcpSocket *socket)
         QSize fs = it.value()->frameSize();
         dev["width"] = fs.width();
         dev["height"] = fs.height();
-        dev["hasFrame"] = !it.value()->getJpeg().isEmpty();
+        dev["hasFrame"] = it.value()->hasFrame();
         devices.append(dev);
     }
     QJsonDocument doc(devices);

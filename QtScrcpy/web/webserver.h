@@ -19,6 +19,7 @@ public:
     ~FrameCapture();
 
     QByteArray getJpeg();
+    bool hasFrame() const;
     QSize frameSize() const { return m_frameSize; }
 
 private:
@@ -26,8 +27,8 @@ private:
                  int linesizeY, int linesizeU, int linesizeV) override;
 
     QString m_serial;
-    QMutex m_mutex;
-    QByteArray m_jpegData;
+    mutable QMutex m_mutex;
+    QImage m_image;
     QSize m_frameSize;
     QElapsedTimer m_throttleTimer;
 };

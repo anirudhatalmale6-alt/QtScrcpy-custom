@@ -60,6 +60,7 @@ private:
     void sendDeviceList(QTcpSocket *socket);
     void sendSnapshot(QTcpSocket *socket, const QString &serial);
     void sendClick(QTcpSocket *socket, const QString &serial, const QByteArray &body);
+    void sendSwipe(QTcpSocket *socket, const QString &serial, const QByteArray &body);
 
     quint16 m_port = 0;
     QMap<QString, FrameCapture*> m_captures;

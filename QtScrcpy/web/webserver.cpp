@@ -207,6 +207,12 @@ void WebServer::handleRequest(QTcpSocket *socket)
         int bodyStart = data.indexOf("\r\n\r\n");
         if (bodyStart >= 0) body = data.mid(bodyStart + 4);
         sendClick(socket, serial, body);
+    } else if (method == "POST" && path.startsWith("/api/swipe/")) {
+        QString serial = path.mid(11);
+        QByteArray body;
+        int bodyStart = data.indexOf("\r\n\r\n");
+        if (bodyStart >= 0) body = data.mid(bodyStart + 4);
+        sendSwipe(socket, serial, body);
     } else if (method == "POST" && path.startsWith("/api/action/")) {
         QString rest = path.mid(12);
         int slash = rest.indexOf('/');
@@ -326,6 +332,51 @@ void WebServer::sendClick(QTcpSocket *socket, const QString &serial, const QByte
     sendResponse(socket, 200, "application/json", "{\"ok\":true}");
 }
 
+void WebServer::sendSwipe(QTcpSocket *socket, const QString &serial, const QByteArray &body)
+{
+    auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+    if (!device) {
+        sendResponse(socket, 404, "application/json", "{\"error\":\"device not found\"}");
+        return;
+    }
+
+    QJsonDocument doc = QJsonDocument::fromJson(body);
+    QJsonObject obj = doc.object();
+    double sx = obj["sx"].toDouble();
+    double sy = obj["sy"].toDouble();
+    double ex = obj["ex"].toDouble();
+    double ey = obj["ey"].toDouble();
+
+    auto *capture = m_captures.value(serial, nullptr);
+    QSize frameSize = capture ? capture->frameSize() : QSize(1080, 1920);
+    if (frameSize.isEmpty()) frameSize = QSize(1080, 1920);
+
+    int startX = static_cast<int>(sx * frameSize.width());
+    int startY = static_cast<int>(sy * frameSize.height());
+    int endX = static_cast<int>(ex * frameSize.width());
+    int endY = static_cast<int>(ey * frameSize.height());
+
+    QPoint startPos(startX, startY);
+    QMouseEvent pressEvent(QEvent::MouseButtonPress, startPos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    device->mouseEvent(&pressEvent, frameSize, frameSize);
+
+    int steps = 5;
+    for (int i = 1; i <= steps; i++) {
+        double t = static_cast<double>(i) / steps;
+        int mx = startX + static_cast<int>((endX - startX) * t);
+        int my = startY + static_cast<int>((endY - startY) * t);
+        QPoint movePos(mx, my);
+        QMouseEvent moveEvent(QEvent::MouseMove, movePos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        device->mouseEvent(&moveEvent, frameSize, frameSize);
+    }
+
+    QPoint endPos(endX, endY);
+    QMouseEvent releaseEvent(QEvent::MouseButtonRelease, endPos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    device->mouseEvent(&releaseEvent, frameSize, frameSize);
+
+    sendResponse(socket, 200, "application/json", "{\"ok\":true}");
+}
+
 void WebServer::sendHtmlPage(QTcpSocket *socket)
 {
     QByteArray html = R"HTML(<!DOCTYPE html>
@@ -345,7 +396,7 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 12px; }
 .tile { background: #222; border: 1px solid #444; border-radius: 4px; overflow: hidden; cursor: pointer; transition: border-color 0.2s; }
 .tile:hover { border-color: #0078d7; }
-.tile img { width: 100%; display: block; background: #111; min-height: 300px; object-fit: contain; }
+.tile img { width: 100%; display: block; background: #111; min-height: 300px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
 .tile .info { padding: 6px 8px; font-size: 11px; color: #aaa; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .info .name { color: #ddd; font-weight: 500; }
 .tile .actions { display: flex; gap: 4px; padding: 4px 8px 8px; justify-content: center; }
@@ -404,7 +455,10 @@ function renderGrid() {
     <div class="tile" data-serial="${d.serial}">
       <img src="/api/snapshot/${d.serial}?t=${Date.now()}"
            onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 350%22><rect fill=%22%23111%22 width=%22200%22 height=%22350%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23444%22 text-anchor=%22middle%22 font-size=%2214%22>No Signal</text></svg>'"
-           onclick="handleClick(event, '${d.serial}')" />
+           onmousedown="startTouch(event, '${d.serial}')"
+           onmouseup="endTouch(event, '${d.serial}')"
+           onmouseleave="endTouch(event, '${d.serial}')"
+           draggable="false" />
       <div class="info">
         <span class="name">${d.name || 'Phone'}</span><br>${d.serial}
       </div>
@@ -417,16 +471,43 @@ function renderGrid() {
   `).join('');
 }
 
-function handleClick(event, serial) {
+let touchState = {};
+
+function startTouch(event, serial) {
+  event.preventDefault();
   const img = event.target;
   const rect = img.getBoundingClientRect();
-  const x = (event.clientX - rect.left) / rect.width;
-  const y = (event.clientY - rect.top) / rect.height;
-  fetch('/api/click/' + serial, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({x, y})
-  });
+  touchState = {
+    serial: serial,
+    sx: (event.clientX - rect.left) / rect.width,
+    sy: (event.clientY - rect.top) / rect.height,
+    active: true
+  };
+}
+
+function endTouch(event, serial) {
+  if (!touchState.active || touchState.serial !== serial) return;
+  touchState.active = false;
+  const img = event.target;
+  const rect = img.getBoundingClientRect();
+  const ex = (event.clientX - rect.left) / rect.width;
+  const ey = (event.clientY - rect.top) / rect.height;
+  const dx = ex - touchState.sx;
+  const dy = ey - touchState.sy;
+  const dist = Math.sqrt(dx*dx + dy*dy);
+  if (dist < 0.03) {
+    fetch('/api/click/' + serial, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({x: touchState.sx, y: touchState.sy})
+    });
+  } else {
+    fetch('/api/swipe/' + serial, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sx: touchState.sx, sy: touchState.sy, ex, ey})
+    });
+  }
 }
 
 async function sendAction(serial, action) {

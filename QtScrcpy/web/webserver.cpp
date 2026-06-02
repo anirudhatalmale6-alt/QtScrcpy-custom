@@ -191,6 +191,8 @@ void WebServer::handleRequest(QTcpSocket *socket)
 
     QString method = parts[0];
     QString path = parts[1];
+    int qmark = path.indexOf('?');
+    if (qmark >= 0) path = path.left(qmark);
 
     if (method == "GET" && path == "/") {
         sendHtmlPage(socket);

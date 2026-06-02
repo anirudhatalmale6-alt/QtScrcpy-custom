@@ -86,6 +86,7 @@ Dialog::Dialog(QWidget *parent) : QWidget(parent), ui(new Ui::Widget)
                     idx++;
                 }
                 on_searchDeviceEdit_textChanged(ui->searchDeviceEdit->text());
+                autoConnectNewDevices();
             } else if (args.contains("show") && args.contains("wlan0")) {
                 QString ip = m_adb.getDeviceIPFromStdOut();
                 if (ip.isEmpty()) {
@@ -952,6 +953,10 @@ void Dialog::on_oneClickBtn_clicked()
     m_pendingConnections.clear();
     m_pendingIndex = 0;
 
+    if (!m_autoUpdatetimer.isActive()) {
+        m_autoUpdatetimer.start(5000);
+    }
+
     for (const auto &serial : m_allDeviceSerials) {
         auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
         if (device && device->getUserData()) {
@@ -991,6 +996,27 @@ void Dialog::connectNextDevice()
     if (m_pendingIndex < m_pendingConnections.size()) {
         QTimer::singleShot(1500, this, &Dialog::connectNextDevice);
     }
+}
+
+void Dialog::autoConnectNewDevices()
+{
+    if (!m_gridViewMode || !m_gridViewWindow || !m_gridViewWindow->isVisible()) return;
+    if (m_pendingIndex < m_pendingConnections.size()) return;
+
+    QStringList newDevices;
+    for (const auto &serial : m_allDeviceSerials) {
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (!device) {
+            newDevices.append(serial);
+        }
+    }
+
+    if (newDevices.isEmpty()) return;
+
+    m_pendingConnections = newDevices;
+    m_pendingIndex = 0;
+    outLog(QString("Auto-connecting %1 new device(s)...").arg(newDevices.size()), false);
+    connectNextDevice();
 }
 
 void Dialog::on_searchDeviceEdit_textChanged(const QString &text)

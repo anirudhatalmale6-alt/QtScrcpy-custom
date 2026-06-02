@@ -89,6 +89,7 @@ private:
     void loadPortHistory();
     void savePortHistory(const QString &port);
     void connectNextDevice();
+    void autoConnectNewDevices();
 
     void showPortEditMenu(const QPoint &pos);
 

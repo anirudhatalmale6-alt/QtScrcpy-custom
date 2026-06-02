@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QByteArray>
 #include <QMap>
+#include <QElapsedTimer>
 
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
 
@@ -28,6 +29,7 @@ private:
     QMutex m_mutex;
     QByteArray m_jpegData;
     QSize m_frameSize;
+    QElapsedTimer m_throttleTimer;
 };
 
 

@@ -935,15 +935,7 @@ void Dialog::on_oneClickBtn_clicked()
         });
     }
 
-    if (!m_webServer) {
-        m_webServer = new WebServer(this);
-        if (m_webServer->startServer(8080)) {
-            outLog(QString("Web Remote started on port %1").arg(m_webServer->serverPort()), false);
-        }
-    }
-
     m_gridViewWindow->clear();
-    m_webServer->clearDevices();
     m_gridViewWindow->show();
     m_gridViewWindow->raise();
     m_gridViewWindow->activateWindow();
@@ -957,7 +949,7 @@ void Dialog::on_oneClickBtn_clicked()
         if (device && device->getUserData()) {
             QString displayName = Config::getInstance().getNickName(serial) + "-" + serial;
             m_gridViewWindow->addDevice(serial, displayName);
-            m_webServer->addDevice(serial);
+            if (m_webServer) m_webServer->addDevice(serial);
             auto *vf = static_cast<QWidget*>(device->getUserData());
             vf->hide();
         } else {

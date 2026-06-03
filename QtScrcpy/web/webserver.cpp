@@ -261,8 +261,8 @@ void WebServer::handleRequest(QTcpSocket *socket)
                 if (action == "home") device->postGoHome();
                 else if (action == "back") device->postGoBack();
                 else if (action == "menu") device->postGoMenu();
-                else if (action == "lock") device->setDisplayPower(false);
-                else if (action == "wake") device->setDisplayPower(true);
+                else if (action == "lock") device->postPower();
+                else if (action == "wake") { device->setDisplayPower(true); device->postBackOrScreenOn(false); }
                 else if (action == "volup") device->postVolumeUp();
                 else if (action == "voldown") device->postVolumeDown();
                 else if (action == "appswitch") device->postAppSwitch();
@@ -270,6 +270,28 @@ void WebServer::handleRequest(QTcpSocket *socket)
             } else {
                 sendResponse(socket, 404, "application/json", "{\"error\":\"device not found\"}");
             }
+        }
+    } else if (method == "POST" && path.startsWith("/api/keyevent/")) {
+        QString serial = path.mid(14);
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (device) {
+            QByteArray body;
+            int bodyStart = data.indexOf("\r\n\r\n");
+            if (bodyStart >= 0) body = data.mid(bodyStart + 4);
+            QJsonDocument jdoc = QJsonDocument::fromJson(body);
+            int keycode = jdoc.object()["keycode"].toInt();
+            if (keycode > 0) {
+                QKeyEvent pressEvt(QEvent::KeyPress, keycode, Qt::NoModifier);
+                auto *capture = m_captures.value(serial, nullptr);
+                QSize fs = capture ? capture->frameSize() : QSize(1080, 1920);
+                if (fs.isEmpty()) fs = QSize(1080, 1920);
+                device->keyEvent(&pressEvt, fs, fs);
+                QKeyEvent releaseEvt(QEvent::KeyRelease, keycode, Qt::NoModifier);
+                device->keyEvent(&releaseEvt, fs, fs);
+            }
+            sendResponse(socket, 200, "application/json", "{\"ok\":true}");
+        } else {
+            sendResponse(socket, 404, "application/json", "{\"error\":\"device not found\"}");
         }
     } else if (method == "GET" && path == "/api/debug") {
         QJsonObject dbg;
@@ -621,11 +643,24 @@ void WebServer::processWsMessage(QTcpSocket *socket, const QByteArray &message, 
         if (action == "home") device->postGoHome();
         else if (action == "back") device->postGoBack();
         else if (action == "menu") device->postGoMenu();
-        else if (action == "lock") device->setDisplayPower(false);
-        else if (action == "wake") device->setDisplayPower(true);
+        else if (action == "lock") device->postPower();
+        else if (action == "wake") { device->setDisplayPower(true); device->postBackOrScreenOn(false); }
         else if (action == "volup") device->postVolumeUp();
         else if (action == "voldown") device->postVolumeDown();
         else if (action == "appswitch") device->postAppSwitch();
+    } else if (type == "keyevent") {
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (!device) return;
+        int keycode = obj["keycode"].toInt();
+        if (keycode > 0) {
+            QKeyEvent pressEvt(QEvent::KeyPress, keycode, Qt::NoModifier);
+            auto *capture = m_captures.value(serial, nullptr);
+            QSize fs = capture ? capture->frameSize() : QSize(1080, 1920);
+            if (fs.isEmpty()) fs = QSize(1080, 1920);
+            device->keyEvent(&pressEvt, fs, fs);
+            QKeyEvent releaseEvt(QEvent::KeyRelease, keycode, Qt::NoModifier);
+            device->keyEvent(&releaseEvt, fs, fs);
+        }
     }
 }
 
@@ -732,12 +767,8 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .ws-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
 .ws-on { background: #1b5e20; color: #a5d6a7; }
 .ws-off { background: #b71c1c; color: #ef9a9a; }
-.bulk-btn { background: #333; border: 1px solid #555; color: #ccc; padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-.bulk-btn:hover { background: #444; color: #fff; }
-.bulk-btn.lock-all { background: #4a1a1a; border-color: #833; }
-.bulk-btn.lock-all:hover { background: #622; }
-.bulk-btn.wake-all { background: #1a3a1a; border-color: #383; }
-.bulk-btn.wake-all:hover { background: #264; }
+.tile .actions button.cmd { background: #1a2a3a; border-color: #358; }
+.tile .actions button.cmd:hover { background: #264; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 12px; }
 .tile { background: #222; border: 1px solid #444; border-radius: 4px; overflow: hidden; cursor: pointer; transition: border-color 0.2s; }
 .tile:hover { border-color: #0078d7; }
@@ -758,8 +789,6 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 <div class="header">
   <h1>AniFelix Remote</h1>
   <input class="search" type="text" id="search" placeholder="Search devices..." oninput="filterDevices()">
-  <button class="bulk-btn lock-all" onclick="bulkAction('lock')">Lock All</button>
-  <button class="bulk-btn wake-all" onclick="bulkAction('wake')">Wake All</button>
   <span class="status" id="status">Connecting...</span>
   <span class="ws-status ws-off" id="wsStatus">WS</span>
 </div>
@@ -869,6 +898,7 @@ function renderGrid() {
     html += '<button class="wake" onclick="sendAction(\'' + d.serial + '\',\'wake\')">Wake</button>';
     html += '<button onclick="sendAction(\'' + d.serial + '\',\'volup\')">Vol+</button>';
     html += '<button onclick="sendAction(\'' + d.serial + '\',\'voldown\')">Vol-</button>';
+    html += '<button class="cmd" onclick="sendCustom(\'' + d.serial + '\')">Cmd</button>';
     html += '</div></div>';
   }
   grid.innerHTML = html;
@@ -930,9 +960,27 @@ function sendAction(serial, action) {
   }
 }
 
-function bulkAction(action) {
-  for (var i = 0; i < devices.length; i++) {
-    sendAction(devices[i].serial, action);
+function sendKeyEvent(serial, keycode) {
+  if (wsConnected && ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({type:'keyevent', serial:serial, keycode:keycode}));
+  } else {
+    fetch('/api/keyevent/' + serial, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({keycode: keycode})
+    });
+  }
+}
+
+function sendCustom(serial) {
+  var cmd = prompt('Enter action name or keycode number:\\n\\nActions: home, back, menu, lock, wake, volup, voldown, appswitch\\nKeycodes: 3=Home, 4=Back, 24=VolUp, 25=VolDown, 26=Power, 82=Menu, 187=AppSwitch\\n\\nOr any Android keycode number:');
+  if (!cmd) return;
+  cmd = cmd.trim();
+  var num = parseInt(cmd);
+  if (!isNaN(num) && num > 0) {
+    sendKeyEvent(serial, num);
+  } else {
+    sendAction(serial, cmd);
   }
 }
 

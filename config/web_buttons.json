@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Vol+",
+    "action": "volup"
+  },
+  {
+    "label": "Vol-",
+    "action": "voldown"
+  },
+  {
+    "label": "Recent",
+    "action": "appswitch"
+  }
+]

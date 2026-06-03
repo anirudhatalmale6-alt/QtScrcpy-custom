@@ -10,6 +10,7 @@
 #include <QList>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QProcess>
 
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
 
@@ -65,6 +66,8 @@ private:
     void sendSnapshot(QTcpSocket *socket, const QString &serial);
     void sendClick(QTcpSocket *socket, const QString &serial, const QByteArray &body);
     void sendSwipe(QTcpSocket *socket, const QString &serial, const QByteArray &body);
+    void sendCustomButtons(QTcpSocket *socket);
+    void sendShellCmd(QTcpSocket *socket, const QString &serial, const QByteArray &body);
 
     bool handleWebSocketUpgrade(QTcpSocket *socket, const QString &request);
     void sendWsFrame(QTcpSocket *socket, const QByteArray &data, bool binary = false);

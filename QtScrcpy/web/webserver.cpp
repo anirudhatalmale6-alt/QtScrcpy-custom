@@ -8,6 +8,9 @@
 #include <QMouseEvent>
 #include <QHostAddress>
 #include <QCryptographicHash>
+#include <QCoreApplication>
+#include <QFile>
+#include <QProcess>
 
 // ---- FrameCapture ----
 
@@ -261,8 +264,8 @@ void WebServer::handleRequest(QTcpSocket *socket)
                 if (action == "home") device->postGoHome();
                 else if (action == "back") device->postGoBack();
                 else if (action == "menu") device->postGoMenu();
-                else if (action == "lock") device->postPower();
-                else if (action == "wake") { device->setDisplayPower(true); device->postBackOrScreenOn(false); }
+                else if (action == "lock") device->setDisplayPower(false);
+                else if (action == "wake") device->setDisplayPower(true);
                 else if (action == "volup") device->postVolumeUp();
                 else if (action == "voldown") device->postVolumeDown();
                 else if (action == "appswitch") device->postAppSwitch();
@@ -293,6 +296,14 @@ void WebServer::handleRequest(QTcpSocket *socket)
         } else {
             sendResponse(socket, 404, "application/json", "{\"error\":\"device not found\"}");
         }
+    } else if (method == "GET" && path == "/api/buttons") {
+        sendCustomButtons(socket);
+    } else if (method == "POST" && path.startsWith("/api/shell/")) {
+        QString serial = path.mid(11);
+        QByteArray body;
+        int bodyStart = data.indexOf("\r\n\r\n");
+        if (bodyStart >= 0) body = data.mid(bodyStart + 4);
+        sendShellCmd(socket, serial, body);
     } else if (method == "GET" && path == "/api/debug") {
         QJsonObject dbg;
         dbg["captureCount"] = m_captures.size();
@@ -643,8 +654,8 @@ void WebServer::processWsMessage(QTcpSocket *socket, const QByteArray &message, 
         if (action == "home") device->postGoHome();
         else if (action == "back") device->postGoBack();
         else if (action == "menu") device->postGoMenu();
-        else if (action == "lock") device->postPower();
-        else if (action == "wake") { device->setDisplayPower(true); device->postBackOrScreenOn(false); }
+        else if (action == "lock") device->setDisplayPower(false);
+        else if (action == "wake") device->setDisplayPower(true);
         else if (action == "volup") device->postVolumeUp();
         else if (action == "voldown") device->postVolumeDown();
         else if (action == "appswitch") device->postAppSwitch();
@@ -660,6 +671,14 @@ void WebServer::processWsMessage(QTcpSocket *socket, const QByteArray &message, 
             device->keyEvent(&pressEvt, fs, fs);
             QKeyEvent releaseEvt(QEvent::KeyRelease, keycode, Qt::NoModifier);
             device->keyEvent(&releaseEvt, fs, fs);
+        }
+    } else if (type == "shell") {
+        QString cmd = obj["command"].toString();
+        if (!cmd.isEmpty() && !serial.isEmpty()) {
+            QProcess *proc = new QProcess();
+            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                    proc, &QProcess::deleteLater);
+            proc->start("adb", QStringList() << "-s" << serial << "shell" << cmd);
         }
     }
 }
@@ -748,6 +767,41 @@ void WebServer::sendWsDeviceList()
     }
 }
 
+void WebServer::sendCustomButtons(QTcpSocket *socket)
+{
+    QString configPath = QCoreApplication::applicationDirPath() + "/config/web_buttons.json";
+    QFile file(configPath);
+    if (file.open(QIODevice::ReadOnly)) {
+        QByteArray data = file.readAll();
+        file.close();
+        sendResponse(socket, 200, "application/json", data);
+    } else {
+        sendResponse(socket, 200, "application/json", "[]");
+    }
+}
+
+void WebServer::sendShellCmd(QTcpSocket *socket, const QString &serial, const QByteArray &body)
+{
+    QJsonDocument doc = QJsonDocument::fromJson(body);
+    QString cmd = doc.object()["command"].toString();
+    if (cmd.isEmpty() || serial.isEmpty()) {
+        sendResponse(socket, 400, "application/json", "{\"error\":\"missing command or serial\"}");
+        return;
+    }
+
+    QProcess proc;
+    proc.start("adb", QStringList() << "-s" << serial << "shell" << cmd);
+    proc.waitForFinished(5000);
+    QString output = QString::fromUtf8(proc.readAllStandardOutput());
+    QString error = QString::fromUtf8(proc.readAllStandardError());
+
+    QJsonObject result;
+    result["ok"] = (proc.exitCode() == 0);
+    result["output"] = output.trimmed();
+    if (!error.isEmpty()) result["error"] = error.trimmed();
+    sendResponse(socket, 200, "application/json", QJsonDocument(result).toJson(QJsonDocument::Compact));
+}
+
 void WebServer::sendHtmlPage(QTcpSocket *socket)
 {
     QByteArray html = R"HTML(<!DOCTYPE html>
@@ -767,8 +821,8 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .ws-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
 .ws-on { background: #1b5e20; color: #a5d6a7; }
 .ws-off { background: #b71c1c; color: #ef9a9a; }
-.tile .actions button.cmd { background: #1a2a3a; border-color: #358; }
-.tile .actions button.cmd:hover { background: #264; }
+.tile .actions button.custom { background: #1a2a3a; border-color: #358; }
+.tile .actions button.custom:hover { background: #264; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 12px; }
 .tile { background: #222; border: 1px solid #444; border-radius: 4px; overflow: hidden; cursor: pointer; transition: border-color 0.2s; }
 .tile:hover { border-color: #0078d7; }
@@ -798,6 +852,7 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 <script>
 var devices = [];
 var imageBlobs = {};
+var customButtons = [];
 var ws = null;
 var wsConnected = false;
 
@@ -896,9 +951,10 @@ function renderGrid() {
     html += '<button onclick="sendAction(\'' + d.serial + '\',\'menu\')">Menu</button>';
     html += '<button class="lock" onclick="sendAction(\'' + d.serial + '\',\'lock\')">Lock</button>';
     html += '<button class="wake" onclick="sendAction(\'' + d.serial + '\',\'wake\')">Wake</button>';
-    html += '<button onclick="sendAction(\'' + d.serial + '\',\'volup\')">Vol+</button>';
-    html += '<button onclick="sendAction(\'' + d.serial + '\',\'voldown\')">Vol-</button>';
-    html += '<button class="cmd" onclick="sendCustom(\'' + d.serial + '\')">Cmd</button>';
+    for (var b = 0; b < customButtons.length; b++) {
+      var btn = customButtons[b];
+      html += '<button class="custom" onclick="runCustomBtn(\'' + d.serial + '\',' + b + ')">' + btn.label + '</button>';
+    }
     html += '</div></div>';
   }
   grid.innerHTML = html;
@@ -960,30 +1016,40 @@ function sendAction(serial, action) {
   }
 }
 
-function sendKeyEvent(serial, keycode) {
-  if (wsConnected && ws && ws.readyState === 1) {
-    ws.send(JSON.stringify({type:'keyevent', serial:serial, keycode:keycode}));
-  } else {
-    fetch('/api/keyevent/' + serial, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({keycode: keycode})
-    });
+function runCustomBtn(serial, index) {
+  var btn = customButtons[index];
+  if (!btn) return;
+  if (btn.action) {
+    sendAction(serial, btn.action);
+  } else if (btn.keycode) {
+    if (wsConnected && ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({type:'keyevent', serial:serial, keycode:btn.keycode}));
+    } else {
+      fetch('/api/keyevent/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keycode:btn.keycode})});
+    }
+  } else if (btn.shell) {
+    var cmd = btn.shell.replace('{serial}', serial);
+    if (wsConnected && ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({type:'shell', serial:serial, command:cmd}));
+    } else {
+      fetch('/api/shell/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:cmd})});
+    }
+  } else if (btn.url) {
+    var url = btn.url.replace('{serial}', serial);
+    fetch(url, {method: btn.method || 'GET'}).catch(function(){});
   }
 }
 
-function sendCustom(serial) {
-  var cmd = prompt('Enter action name or keycode number:\\n\\nActions: home, back, menu, lock, wake, volup, voldown, appswitch\\nKeycodes: 3=Home, 4=Back, 24=VolUp, 25=VolDown, 26=Power, 82=Menu, 187=AppSwitch\\n\\nOr any Android keycode number:');
-  if (!cmd) return;
-  cmd = cmd.trim();
-  var num = parseInt(cmd);
-  if (!isNaN(num) && num > 0) {
-    sendKeyEvent(serial, num);
-  } else {
-    sendAction(serial, cmd);
-  }
+function loadCustomButtons() {
+  fetch('/api/buttons').then(function(r) { return r.json(); }).then(function(data) {
+    if (Array.isArray(data)) {
+      customButtons = data;
+      renderGrid();
+    }
+  }).catch(function(){});
 }
 
+loadCustomButtons();
 connectWs();
 </script>
 </body>

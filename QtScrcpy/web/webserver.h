@@ -77,8 +77,11 @@ private:
     void pushFramesToClients();
     void sendWsDeviceList();
 
+    QJsonArray buildDeviceArray();
+
     quint16 m_port = 0;
     QMap<QString, FrameCapture*> m_captures;
+    QStringList m_deviceOrder;
     QList<QTcpSocket*> m_wsClients;
     QMap<QString, quint64> m_lastPushedVersion;
     QTimer *m_pushTimer = nullptr;

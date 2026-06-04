@@ -168,6 +168,7 @@ void WebServer::addDevice(const QString &serial)
         device->registerDeviceObserver(capture);
     }
     m_captures[serial] = capture;
+    m_deviceOrder.append(serial);
     sendWsDeviceList();
 }
 
@@ -182,6 +183,7 @@ void WebServer::removeDevice(const QString &serial)
     }
     capture->deleteLater();
     m_lastPushedVersion.remove(serial);
+    m_deviceOrder.removeAll(serial);
     sendWsDeviceList();
 }
 
@@ -196,6 +198,7 @@ void WebServer::clearDevices()
     }
     m_captures.clear();
     m_lastPushedVersion.clear();
+    m_deviceOrder.clear();
 }
 
 void WebServer::incomingConnection(qintptr socketDescriptor)
@@ -347,20 +350,28 @@ void WebServer::sendResponse(QTcpSocket *socket, int statusCode, const QString &
     socket->disconnectFromHost();
 }
 
-void WebServer::sendDeviceList(QTcpSocket *socket)
+QJsonArray WebServer::buildDeviceArray()
 {
     QJsonArray devices;
-    for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
+    for (int i = m_deviceOrder.size() - 1; i >= 0; i--) {
+        const QString &serial = m_deviceOrder[i];
+        auto *capture = m_captures.value(serial, nullptr);
+        if (!capture) continue;
         QJsonObject dev;
-        dev["serial"] = it.key();
-        dev["name"] = Config::getInstance().getNickName(it.key());
-        QSize fs = it.value()->frameSize();
+        dev["serial"] = serial;
+        dev["name"] = Config::getInstance().getNickName(serial);
+        QSize fs = capture->frameSize();
         dev["width"] = fs.width();
         dev["height"] = fs.height();
-        dev["hasFrame"] = it.value()->hasFrame();
+        dev["hasFrame"] = capture->hasFrame();
         devices.append(dev);
     }
-    QJsonDocument doc(devices);
+    return devices;
+}
+
+void WebServer::sendDeviceList(QTcpSocket *socket)
+{
+    QJsonDocument doc(buildDeviceArray());
     sendResponse(socket, 200, "application/json", doc.toJson(QJsonDocument::Compact));
 }
 
@@ -484,20 +495,9 @@ bool WebServer::handleWebSocketUpgrade(QTcpSocket *socket, const QString &reques
 
     m_wsClients.append(socket);
 
-    QJsonArray devices;
-    for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
-        QJsonObject dev;
-        dev["serial"] = it.key();
-        dev["name"] = Config::getInstance().getNickName(it.key());
-        QSize fs = it.value()->frameSize();
-        dev["width"] = fs.width();
-        dev["height"] = fs.height();
-        dev["hasFrame"] = it.value()->hasFrame();
-        devices.append(dev);
-    }
     QJsonObject msg;
     msg["type"] = QString("devices");
-    msg["data"] = devices;
+    msg["data"] = buildDeviceArray();
     sendWsFrame(socket, QJsonDocument(msg).toJson(QJsonDocument::Compact), false);
 
     return true;
@@ -744,20 +744,9 @@ void WebServer::sendWsDeviceList()
 {
     if (m_wsClients.isEmpty()) return;
 
-    QJsonArray devices;
-    for (auto it = m_captures.begin(); it != m_captures.end(); ++it) {
-        QJsonObject dev;
-        dev["serial"] = it.key();
-        dev["name"] = Config::getInstance().getNickName(it.key());
-        QSize fs = it.value()->frameSize();
-        dev["width"] = fs.width();
-        dev["height"] = fs.height();
-        dev["hasFrame"] = it.value()->hasFrame();
-        devices.append(dev);
-    }
     QJsonObject msg;
     msg["type"] = QString("devices");
-    msg["data"] = devices;
+    msg["data"] = buildDeviceArray();
     QByteArray json = QJsonDocument(msg).toJson(QJsonDocument::Compact);
 
     for (auto *ws : m_wsClients) {

@@ -58,10 +58,12 @@ protected:
     void incomingConnection(qintptr socketDescriptor) override;
 
 private:
+    bool checkAuth(QTcpSocket *socket, const QString &request, QString &username);
+    void sendLoginPage(QTcpSocket *socket);
     void handleRequest(QTcpSocket *socket);
     void sendResponse(QTcpSocket *socket, int statusCode, const QString &contentType,
-                      const QByteArray &body);
-    void sendHtmlPage(QTcpSocket *socket);
+                      const QByteArray &body, const QByteArray &extraHeaders = QByteArray());
+    void sendHtmlPage(QTcpSocket *socket, const QString &username);
     void sendDeviceList(QTcpSocket *socket);
     void sendSnapshot(QTcpSocket *socket, const QString &serial);
     void sendClick(QTcpSocket *socket, const QString &serial, const QByteArray &body);
@@ -69,7 +71,7 @@ private:
     void sendCustomButtons(QTcpSocket *socket);
     void sendShellCmd(QTcpSocket *socket, const QString &serial, const QByteArray &body);
 
-    bool handleWebSocketUpgrade(QTcpSocket *socket, const QString &request);
+    bool handleWebSocketUpgrade(QTcpSocket *socket, const QString &request, const QString &username);
     void sendWsFrame(QTcpSocket *socket, const QByteArray &data, bool binary = false);
     void onWsData(QTcpSocket *socket);
     void processWsMessage(QTcpSocket *socket, const QByteArray &message, bool binary);
@@ -78,13 +80,19 @@ private:
     void sendWsDeviceList();
 
     QJsonArray buildDeviceArray();
+    void loadAuthConfig();
+    QString configDir();
 
     quint16 m_port = 0;
     QMap<QString, FrameCapture*> m_captures;
     QStringList m_deviceOrder;
     QList<QTcpSocket*> m_wsClients;
+    QMap<QTcpSocket*, QString> m_wsUsernames;
     QMap<QString, quint64> m_lastPushedVersion;
     QTimer *m_pushTimer = nullptr;
+    QMap<QString, QString> m_users;
+    bool m_authEnabled = false;
+    QString m_iframeUrl;
 };
 
 #endif // WEBSERVER_H

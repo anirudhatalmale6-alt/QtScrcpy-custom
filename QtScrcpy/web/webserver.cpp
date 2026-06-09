@@ -107,6 +107,33 @@ QByteArray FrameCapture::getImageData(QString &format)
 WebServer::WebServer(QObject *parent)
     : QTcpServer(parent)
 {
+    loadAuthConfig();
+}
+
+QString WebServer::configDir()
+{
+    return QCoreApplication::applicationDirPath() + "/config";
+}
+
+void WebServer::loadAuthConfig()
+{
+    QFile authFile(configDir() + "/web_auth.json");
+    if (authFile.open(QIODevice::ReadOnly)) {
+        QJsonDocument doc = QJsonDocument::fromJson(authFile.readAll());
+        authFile.close();
+        QJsonObject obj = doc.object();
+        QJsonArray users = obj["users"].toArray();
+        for (const auto &u : users) {
+            QJsonObject user = u.toObject();
+            QString name = user["username"].toString();
+            QString pass = user["password"].toString();
+            if (!name.isEmpty() && !pass.isEmpty()) {
+                m_users[name] = pass;
+            }
+        }
+        m_authEnabled = !m_users.isEmpty();
+        m_iframeUrl = obj["iframe_url"].toString();
+    }
 }
 
 WebServer::~WebServer()
@@ -218,6 +245,36 @@ void WebServer::incomingConnection(qintptr socketDescriptor)
     });
 }
 
+bool WebServer::checkAuth(QTcpSocket *socket, const QString &request, QString &username)
+{
+    if (!m_authEnabled) {
+        username = "anonymous";
+        return true;
+    }
+
+    QStringList lines = request.split("\r\n");
+    for (const auto &line : lines) {
+        if (line.startsWith("Authorization: Basic ", Qt::CaseInsensitive)) {
+            QByteArray decoded = QByteArray::fromBase64(line.mid(21).trimmed().toUtf8());
+            QString creds = QString::fromUtf8(decoded);
+            int colon = creds.indexOf(':');
+            if (colon > 0) {
+                QString user = creds.left(colon);
+                QString pass = creds.mid(colon + 1);
+                if (m_users.contains(user) && m_users[user] == pass) {
+                    username = user;
+                    return true;
+                }
+            }
+        }
+    }
+
+    QByteArray body = "Unauthorized";
+    QByteArray authHeader = "WWW-Authenticate: Basic realm=\"AniFelix Remote\"\r\n";
+    sendResponse(socket, 401, "text/plain", body, authHeader);
+    return false;
+}
+
 void WebServer::handleRequest(QTcpSocket *socket)
 {
     QByteArray data = socket->readAll();
@@ -233,12 +290,15 @@ void WebServer::handleRequest(QTcpSocket *socket)
     int qmark = path.indexOf('?');
     if (qmark >= 0) path = path.left(qmark);
 
+    QString username;
+    if (!checkAuth(socket, request, username)) return;
+
     if (method == "GET" && path == "/ws") {
-        if (handleWebSocketUpgrade(socket, request)) return;
+        if (handleWebSocketUpgrade(socket, request, username)) return;
     }
 
     if (method == "GET" && path == "/") {
-        sendHtmlPage(socket);
+        sendHtmlPage(socket, username);
     } else if (method == "GET" && path == "/api/devices") {
         sendDeviceList(socket);
     } else if (method == "GET" && path.startsWith("/api/snapshot/")) {
@@ -334,14 +394,18 @@ void WebServer::handleRequest(QTcpSocket *socket)
 }
 
 void WebServer::sendResponse(QTcpSocket *socket, int statusCode, const QString &contentType,
-                              const QByteArray &body)
+                              const QByteArray &body, const QByteArray &extraHeaders)
 {
-    QString statusText = (statusCode == 200) ? "OK" : "Not Found";
+    QString statusText;
+    if (statusCode == 200) statusText = "OK";
+    else if (statusCode == 401) statusText = "Unauthorized";
+    else statusText = "Not Found";
     QByteArray response;
     response.append(QString("HTTP/1.1 %1 %2\r\n").arg(statusCode).arg(statusText).toUtf8());
     response.append(QString("Content-Type: %1\r\n").arg(contentType).toUtf8());
     response.append(QString("Content-Length: %1\r\n").arg(body.size()).toUtf8());
     response.append("Access-Control-Allow-Origin: *\r\n");
+    if (!extraHeaders.isEmpty()) response.append(extraHeaders);
     response.append("Connection: close\r\n");
     response.append("\r\n");
     response.append(body);
@@ -467,8 +531,9 @@ void WebServer::sendSwipe(QTcpSocket *socket, const QString &serial, const QByte
 
 // ---- WebSocket ----
 
-bool WebServer::handleWebSocketUpgrade(QTcpSocket *socket, const QString &request)
+bool WebServer::handleWebSocketUpgrade(QTcpSocket *socket, const QString &request, const QString &username)
 {
+    Q_UNUSED(username);
     if (!request.contains("Upgrade: websocket", Qt::CaseInsensitive)) return false;
 
     QString wsKey;
@@ -494,6 +559,7 @@ bool WebServer::handleWebSocketUpgrade(QTcpSocket *socket, const QString &reques
     socket->flush();
 
     m_wsClients.append(socket);
+    m_wsUsernames[socket] = username;
 
     QJsonObject msg;
     msg["type"] = QString("devices");
@@ -686,6 +752,7 @@ void WebServer::processWsMessage(QTcpSocket *socket, const QByteArray &message, 
 void WebServer::removeWsClient(QTcpSocket *socket)
 {
     m_wsClients.removeAll(socket);
+    m_wsUsernames.remove(socket);
 }
 
 void WebServer::pushFramesToClients()
@@ -758,15 +825,17 @@ void WebServer::sendWsDeviceList()
 
 void WebServer::sendCustomButtons(QTcpSocket *socket)
 {
-    QString configPath = QCoreApplication::applicationDirPath() + "/config/web_buttons.json";
-    QFile file(configPath);
+    QFile file(configDir() + "/web_buttons.json");
+    QJsonArray buttons;
     if (file.open(QIODevice::ReadOnly)) {
-        QByteArray data = file.readAll();
+        QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
         file.close();
-        sendResponse(socket, 200, "application/json", data);
-    } else {
-        sendResponse(socket, 200, "application/json", "[]");
+        if (doc.isArray()) buttons = doc.array();
     }
+    QJsonObject result;
+    result["buttons"] = buttons;
+    if (!m_iframeUrl.isEmpty()) result["iframe_url"] = m_iframeUrl;
+    sendResponse(socket, 200, "application/json", QJsonDocument(result).toJson(QJsonDocument::Compact));
 }
 
 void WebServer::sendShellCmd(QTcpSocket *socket, const QString &serial, const QByteArray &body)
@@ -791,8 +860,9 @@ void WebServer::sendShellCmd(QTcpSocket *socket, const QString &serial, const QB
     sendResponse(socket, 200, "application/json", QJsonDocument(result).toJson(QJsonDocument::Compact));
 }
 
-void WebServer::sendHtmlPage(QTcpSocket *socket)
+void WebServer::sendHtmlPage(QTcpSocket *socket, const QString &username)
 {
+    QByteArray userBytes = username.toUtf8();
     QByteArray html = R"HTML(<!DOCTYPE html>
 <html>
 <head>
@@ -807,16 +877,16 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .search { background: #333; border: 1px solid #555; border-radius: 4px; padding: 6px 12px; color: #eee; font-size: 14px; width: 250px; }
 .search:focus { outline: none; border-color: #0078d7; }
 .status { margin-left: auto; font-size: 13px; color: #888; }
+.user-badge { font-size: 11px; color: #aaa; margin-left: 8px; }
 .ws-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
 .ws-on { background: #1b5e20; color: #a5d6a7; }
 .ws-off { background: #b71c1c; color: #ef9a9a; }
-.tile .actions button.custom { background: #1a2a3a; border-color: #358; }
-.tile .actions button.custom:hover { background: #264; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 12px; }
 .tile { background: #222; border: 1px solid #444; border-radius: 4px; overflow: hidden; cursor: pointer; transition: border-color 0.2s; }
 .tile:hover { border-color: #0078d7; }
 .tile img { width: 100%; display: block; background: #111; min-height: 300px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
-.tile .info { padding: 6px 8px; font-size: 11px; color: #aaa; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .info { padding: 6px 8px; font-size: 11px; color: #aaa; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.tile .info:hover { color: #0078d7; }
 .tile .info .name { color: #ddd; font-weight: 500; }
 .tile .actions { display: flex; gap: 3px; padding: 4px 6px 6px; justify-content: center; flex-wrap: wrap; }
 .tile .actions button { background: #333; border: 1px solid #555; color: #ccc; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 10px; }
@@ -825,7 +895,23 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .tile .actions button.lock:hover { background: #622; }
 .tile .actions button.wake { background: #1a3a1a; border-color: #383; }
 .tile .actions button.wake:hover { background: #264; }
+.tile .actions button.custom { background: #1a2a3a; border-color: #358; }
+.tile .actions button.custom:hover { background: #264; }
+.tile .actions button.info-btn { background: #2a2a1a; border-color: #885; }
+.tile .actions button.info-btn:hover { background: #442; }
 .no-devices { text-align: center; padding: 80px 20px; color: #666; font-size: 16px; }
+.toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: #eee; padding: 10px 18px; border-radius: 6px; font-size: 13px; z-index: 1000; opacity: 0; transition: opacity 0.3s; pointer-events: none; max-width: 400px; border: 1px solid #555; }
+.toast.show { opacity: 1; }
+.toast.ok { border-color: #4a4; }
+.toast.err { border-color: #a44; }
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 500; }
+.modal-overlay.show { display: flex; align-items: center; justify-content: center; }
+.modal { background: #222; border: 1px solid #444; border-radius: 8px; width: 90%; max-width: 800px; height: 80vh; display: flex; flex-direction: column; }
+.modal-header { display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid #333; }
+.modal-header h3 { flex: 1; font-size: 14px; color: #ddd; }
+.modal-header button { background: #444; border: none; color: #ccc; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.modal-header button:hover { background: #555; }
+.modal iframe { flex: 1; border: none; background: #111; }
 </style>
 </head>
 <body>
@@ -833,17 +919,55 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
   <h1>AniFelix Remote</h1>
   <input class="search" type="text" id="search" placeholder="Search devices..." oninput="filterDevices()">
   <span class="status" id="status">Connecting...</span>
+  <span class="user-badge" id="userBadge"></span>
   <span class="ws-status ws-off" id="wsStatus">WS</span>
 </div>
 <div class="grid" id="grid"></div>
 <div class="no-devices" id="noDevices" style="display:none">No devices connected</div>
+<div class="toast" id="toast"></div>
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="modalTitle">Device Info</h3>
+      <button onclick="closeModal()">Close</button>
+    </div>
+    <iframe id="modalIframe" src="about:blank"></iframe>
+  </div>
+</div>
 
 <script>
 var devices = [];
 var imageBlobs = {};
 var customButtons = [];
+var iframeUrl = '';
+var currentUser = ')HTML" + userBytes + R"HTML(';
 var ws = null;
 var wsConnected = false;
+var toastTimer = null;
+
+document.getElementById('userBadge').textContent = currentUser !== 'anonymous' ? currentUser : '';
+
+function showToast(msg, ok) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (ok ? 'ok' : 'err');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function() { t.className = 'toast'; }, 2500);
+}
+
+function openModal(serial) {
+  if (!iframeUrl) return;
+  var url = iframeUrl.replace(/{serial}/g, serial).replace(/{user}/g, currentUser);
+  document.getElementById('modalTitle').textContent = serial;
+  document.getElementById('modalIframe').src = url;
+  document.getElementById('modalOverlay').className = 'modal-overlay show';
+}
+
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('modalOverlay')) return;
+  document.getElementById('modalOverlay').className = 'modal-overlay';
+  document.getElementById('modalIframe').src = 'about:blank';
+}
 
 function connectWs() {
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -863,9 +987,7 @@ function connectWs() {
     setTimeout(connectWs, 2000);
   };
 
-  ws.onerror = function() {
-    ws.close();
-  };
+  ws.onerror = function() { ws.close(); };
 
   ws.onmessage = function(evt) {
     if (typeof evt.data === 'string') {
@@ -882,28 +1004,18 @@ function connectWs() {
       var serialLen = (buf[0] << 8) | buf[1];
       if (buf.length < 2 + serialLen) return;
       var serial = '';
-      for (var i = 0; i < serialLen; i++) {
-        serial += String.fromCharCode(buf[2 + i]);
-      }
+      for (var i = 0; i < serialLen; i++) serial += String.fromCharCode(buf[2 + i]);
       var jpegData = evt.data.slice(2 + serialLen);
       var blob = new Blob([jpegData], {type: 'image/jpeg'});
-
-      if (imageBlobs[serial]) {
-        URL.revokeObjectURL(imageBlobs[serial]);
-      }
+      if (imageBlobs[serial]) URL.revokeObjectURL(imageBlobs[serial]);
       imageBlobs[serial] = URL.createObjectURL(blob);
-
       var imgs = document.querySelectorAll('.tile[data-serial="' + serial + '"] img');
-      for (var j = 0; j < imgs.length; j++) {
-        imgs[j].src = imageBlobs[serial];
-      }
+      for (var j = 0; j < imgs.length; j++) imgs[j].src = imageBlobs[serial];
     }
   };
 }
 
-function filterDevices() {
-  renderGrid();
-}
+function filterDevices() { renderGrid(); }
 
 function renderGrid() {
   var grid = document.getElementById('grid');
@@ -915,11 +1027,7 @@ function renderGrid() {
       (d.name && d.name.toLowerCase().indexOf(filter) >= 0);
   });
 
-  if (filtered.length === 0) {
-    grid.innerHTML = '';
-    noDevices.style.display = 'block';
-    return;
-  }
+  if (filtered.length === 0) { grid.innerHTML = ''; noDevices.style.display = 'block'; return; }
   noDevices.style.display = 'none';
 
   var html = '';
@@ -933,16 +1041,16 @@ function renderGrid() {
     html += ' onmouseup="endTouch(event,\'' + d.serial + '\')"';
     html += ' onmouseleave="endTouch(event,\'' + d.serial + '\')"';
     html += ' draggable="false" />';
-    html += '<div class="info"><span class="name">' + (d.name || 'Phone') + '</span><br>' + d.serial + '</div>';
+    html += '<div class="info" onclick="openModal(\'' + d.serial + '\')"><span class="name">' + (d.name || 'Phone') + '</span><br>' + d.serial + '</div>';
     html += '<div class="actions">';
-    html += '<button onclick="sendAction(\'' + d.serial + '\',\'home\')">Home</button>';
-    html += '<button onclick="sendAction(\'' + d.serial + '\',\'back\')">Back</button>';
-    html += '<button onclick="sendAction(\'' + d.serial + '\',\'menu\')">Menu</button>';
-    html += '<button class="lock" onclick="sendAction(\'' + d.serial + '\',\'lock\')">Lock</button>';
-    html += '<button class="wake" onclick="sendAction(\'' + d.serial + '\',\'wake\')">Wake</button>';
+    html += '<button onclick="doAction(\'' + d.serial + '\',\'home\')">Home</button>';
+    html += '<button onclick="doAction(\'' + d.serial + '\',\'back\')">Back</button>';
+    html += '<button onclick="doAction(\'' + d.serial + '\',\'menu\')">Menu</button>';
+    html += '<button class="lock" onclick="doAction(\'' + d.serial + '\',\'lock\')">Lock</button>';
+    html += '<button class="wake" onclick="doAction(\'' + d.serial + '\',\'wake\')">Wake</button>';
+    if (iframeUrl) html += '<button class="info-btn" onclick="openModal(\'' + d.serial + '\')">Info</button>';
     for (var b = 0; b < customButtons.length; b++) {
-      var btn = customButtons[b];
-      html += '<button class="custom" onclick="runCustomBtn(\'' + d.serial + '\',' + b + ')">' + btn.label + '</button>';
+      html += '<button class="custom" onclick="runCustomBtn(\'' + d.serial + '\',' + b + ')">' + customButtons[b].label + '</button>';
     }
     html += '</div></div>';
   }
@@ -953,92 +1061,65 @@ var touchState = {};
 
 function startTouch(event, serial) {
   event.preventDefault();
-  var img = event.target;
-  var rect = img.getBoundingClientRect();
-  touchState = {
-    serial: serial,
-    sx: (event.clientX - rect.left) / rect.width,
-    sy: (event.clientY - rect.top) / rect.height,
-    active: true
-  };
+  var rect = event.target.getBoundingClientRect();
+  touchState = { serial: serial, sx: (event.clientX - rect.left) / rect.width, sy: (event.clientY - rect.top) / rect.height, active: true };
 }
 
 function endTouch(event, serial) {
   if (!touchState.active || touchState.serial !== serial) return;
   touchState.active = false;
-  var img = event.target;
-  var rect = img.getBoundingClientRect();
+  var rect = event.target.getBoundingClientRect();
   var ex = (event.clientX - rect.left) / rect.width;
   var ey = (event.clientY - rect.top) / rect.height;
-  var dx = ex - touchState.sx;
-  var dy = ey - touchState.sy;
-  var dist = Math.sqrt(dx*dx + dy*dy);
-
+  var dist = Math.sqrt(Math.pow(ex - touchState.sx, 2) + Math.pow(ey - touchState.sy, 2));
   if (wsConnected && ws && ws.readyState === 1) {
-    if (dist < 0.03) {
-      ws.send(JSON.stringify({type:'click', serial:serial, x:touchState.sx, y:touchState.sy}));
-    } else {
-      ws.send(JSON.stringify({type:'swipe', serial:serial, sx:touchState.sx, sy:touchState.sy, ex:ex, ey:ey}));
-    }
+    if (dist < 0.03) ws.send(JSON.stringify({type:'click', serial:serial, x:touchState.sx, y:touchState.sy}));
+    else ws.send(JSON.stringify({type:'swipe', serial:serial, sx:touchState.sx, sy:touchState.sy, ex:ex, ey:ey}));
   } else {
-    if (dist < 0.03) {
-      fetch('/api/click/' + serial, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({x: touchState.sx, y: touchState.sy})
-      });
-    } else {
-      fetch('/api/swipe/' + serial, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({sx: touchState.sx, sy: touchState.sy, ex: ex, ey: ey})
-      });
-    }
+    if (dist < 0.03) fetch('/api/click/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({x:touchState.sx, y:touchState.sy})});
+    else fetch('/api/swipe/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({sx:touchState.sx, sy:touchState.sy, ex:ex, ey:ey})});
   }
 }
 
-function sendAction(serial, action) {
+function doAction(serial, action) {
   if (wsConnected && ws && ws.readyState === 1) {
     ws.send(JSON.stringify({type:'action', serial:serial, action:action}));
   } else {
-    fetch('/api/action/' + serial + '/' + action, {method: 'POST'});
+    fetch('/api/action/' + serial + '/' + action, {method:'POST'});
   }
+  showToast(action + ' sent to ' + serial.substr(0,12), true);
 }
 
 function runCustomBtn(serial, index) {
   var btn = customButtons[index];
   if (!btn) return;
   if (btn.action) {
-    sendAction(serial, btn.action);
+    doAction(serial, btn.action);
   } else if (btn.keycode) {
-    if (wsConnected && ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({type:'keyevent', serial:serial, keycode:btn.keycode}));
-    } else {
-      fetch('/api/keyevent/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keycode:btn.keycode})});
-    }
+    if (wsConnected && ws && ws.readyState === 1) ws.send(JSON.stringify({type:'keyevent', serial:serial, keycode:btn.keycode}));
+    else fetch('/api/keyevent/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keycode:btn.keycode})});
+    showToast(btn.label + ' sent', true);
   } else if (btn.shell) {
-    var cmd = btn.shell.replace('{serial}', serial);
-    if (wsConnected && ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({type:'shell', serial:serial, command:cmd}));
-    } else {
-      fetch('/api/shell/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:cmd})});
-    }
+    var cmd = btn.shell.replace(/{serial}/g, serial).replace(/{user}/g, currentUser);
+    if (wsConnected && ws && ws.readyState === 1) ws.send(JSON.stringify({type:'shell', serial:serial, command:cmd}));
+    else fetch('/api/shell/' + serial, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:cmd})}).then(function(r){return r.json();}).then(function(d){showToast(d.output||d.error||'Done', d.ok);});
+    showToast(btn.label + ' running...', true);
   } else if (btn.url) {
-    var url = btn.url.replace('{serial}', serial);
-    fetch(url, {method: btn.method || 'GET'}).catch(function(){});
+    var url = btn.url.replace(/{serial}/g, serial).replace(/{user}/g, currentUser);
+    fetch(url, {method:btn.method||'GET'}).then(function(){showToast(btn.label+' OK',true);}).catch(function(){showToast(btn.label+' failed',false);});
   }
 }
 
-function loadCustomButtons() {
-  fetch('/api/buttons').then(function(r) { return r.json(); }).then(function(data) {
-    if (Array.isArray(data)) {
-      customButtons = data;
-      renderGrid();
-    }
+function loadConfig() {
+  fetch('/api/buttons').then(function(r){return r.json();}).then(function(data) {
+    if (data.buttons) customButtons = data.buttons;
+    else if (Array.isArray(data)) customButtons = data;
+    if (data.iframe_url) iframeUrl = data.iframe_url;
+    renderGrid();
   }).catch(function(){});
 }
 
-loadCustomButtons();
+loadConfig();
 connectWs();
 </script>
 </body>

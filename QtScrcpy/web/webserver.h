@@ -93,6 +93,7 @@ private:
     QMap<QString, QString> m_users;
     bool m_authEnabled = false;
     QString m_iframeUrl;
+    QString m_webhookUrl;
 };
 
 #endif // WEBSERVER_H

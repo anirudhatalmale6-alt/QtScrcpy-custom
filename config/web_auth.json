@@ -2,5 +2,6 @@
   "users": [
     {"username": "admin", "password": "admin123"}
   ],
-  "iframe_url": ""
+  "iframe_url": "",
+  "webhook_url": ""
 }

@@ -133,6 +133,7 @@ void WebServer::loadAuthConfig()
         }
         m_authEnabled = !m_users.isEmpty();
         m_iframeUrl = obj["iframe_url"].toString();
+        m_webhookUrl = obj["webhook_url"].toString();
     }
 }
 
@@ -835,6 +836,7 @@ void WebServer::sendCustomButtons(QTcpSocket *socket)
     QJsonObject result;
     result["buttons"] = buttons;
     if (!m_iframeUrl.isEmpty()) result["iframe_url"] = m_iframeUrl;
+    if (!m_webhookUrl.isEmpty()) result["webhook_url"] = m_webhookUrl;
     sendResponse(socket, 200, "application/json", QJsonDocument(result).toJson(QJsonDocument::Compact));
 }
 
@@ -900,6 +902,14 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 .tile .actions button.info-btn { background: #2a2a1a; border-color: #885; }
 .tile .actions button.info-btn:hover { background: #442; }
 .no-devices { text-align: center; padding: 80px 20px; color: #666; font-size: 16px; }
+.webhook-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 0; background: #222; border-top: 1px solid #444; z-index: 400; display: flex; flex-direction: column; transition: height 0.3s; }
+.webhook-bar.open { height: 180px; }
+.webhook-bar .bar-header { display: flex; align-items: center; padding: 4px 12px; background: #2a2a2a; cursor: pointer; min-height: 28px; }
+.webhook-bar .bar-header span { flex: 1; font-size: 11px; color: #aaa; }
+.webhook-bar .bar-header button { background: none; border: none; color: #888; cursor: pointer; font-size: 14px; padding: 0 6px; }
+.webhook-bar iframe { flex: 1; border: none; background: #111; width: 100%; }
+body.has-webhook { padding-bottom: 28px; }
+body.has-webhook.webhook-expanded { padding-bottom: 180px; }
 .toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: #eee; padding: 10px 18px; border-radius: 6px; font-size: 13px; z-index: 1000; opacity: 0; transition: opacity 0.3s; pointer-events: none; max-width: 400px; border: 1px solid #555; }
 .toast.show { opacity: 1; }
 .toast.ok { border-color: #4a4; }
@@ -924,6 +934,13 @@ body { background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSys
 </div>
 <div class="grid" id="grid"></div>
 <div class="no-devices" id="noDevices" style="display:none">No devices connected</div>
+<div class="webhook-bar" id="webhookBar">
+  <div class="bar-header" onclick="toggleWebhook()">
+    <span>Webhook Messages</span>
+    <button id="webhookToggle">^</button>
+  </div>
+  <iframe id="webhookIframe" src="about:blank"></iframe>
+</div>
 <div class="toast" id="toast"></div>
 <div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
@@ -940,6 +957,8 @@ var devices = [];
 var imageBlobs = {};
 var customButtons = [];
 var iframeUrl = '';
+var webhookUrl = '';
+var webhookOpen = false;
 var currentUser = ')HTML" + userBytes + R"HTML(';
 var ws = null;
 var wsConnected = false;
@@ -1110,11 +1129,32 @@ function runCustomBtn(serial, index) {
   }
 }
 
+function toggleWebhook() {
+  webhookOpen = !webhookOpen;
+  var bar = document.getElementById('webhookBar');
+  var btn = document.getElementById('webhookToggle');
+  if (webhookOpen) {
+    bar.className = 'webhook-bar open';
+    btn.textContent = 'v';
+    document.body.className = 'has-webhook webhook-expanded';
+  } else {
+    bar.className = 'webhook-bar';
+    btn.textContent = '^';
+    document.body.className = 'has-webhook';
+  }
+}
+
 function loadConfig() {
   fetch('/api/buttons').then(function(r){return r.json();}).then(function(data) {
     if (data.buttons) customButtons = data.buttons;
     else if (Array.isArray(data)) customButtons = data;
     if (data.iframe_url) iframeUrl = data.iframe_url;
+    if (data.webhook_url) {
+      webhookUrl = data.webhook_url.replace(/{user}/g, currentUser);
+      document.getElementById('webhookIframe').src = webhookUrl;
+      document.getElementById('webhookBar').style.display = 'flex';
+      document.body.className = 'has-webhook';
+    }
     renderGrid();
   }).catch(function(){});
 }
